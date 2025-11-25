@@ -21,9 +21,9 @@ Architecture:
 
 Flow:
     1. Login with Dummy account credentials
-    2. Use Twikit's set_active_user() to switch context to Main
+    2. Use Twikit's set_delegate_account() to switch context to Main
     3. Publish tweet as Main
-    4. Revert context back to Dummy
+    4. Revert context back to Dummy (set_delegate_account(None))
 
 Security Benefits:
     - If Dummy is banned → Create new dummy in 5 minutes
@@ -36,13 +36,24 @@ Requirements:
 """
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 from twikit import Client
+from twikit.errors import (
+    BadRequest,
+    Forbidden,
+    TooManyRequests,
+    TwitterException,
+    Unauthorized,
+)
 
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+# Cookie file for session persistence
+COOKIE_FILE = Path("cookies.json")
 
 
 class GhostDelegate:
@@ -64,16 +75,46 @@ class GhostDelegate:
         """
         Authenticate with the dummy account.
 
+        Attempts to load existing cookies first for faster startup.
+        Falls back to fresh login if cookies are invalid or missing.
+
         Returns:
             True if login successful, False otherwise.
         """
         try:
             self.client = Client()
+
+            # Try to load existing cookies first
+            if COOKIE_FILE.exists():
+                try:
+                    self.client.load_cookies(str(COOKIE_FILE))
+                    logger.info("Loaded cookies from file")
+
+                    # Verify session is still valid by fetching user info
+                    self.dummy_user = await self.client.get_user_by_screen_name(
+                        settings.dummy_username
+                    )
+                    self.main_user = await self.client.get_user_by_screen_name(
+                        settings.main_account_handle
+                    )
+
+                    self._is_authenticated = True
+                    logger.info(f"Session restored for dummy: @{settings.dummy_username}")
+                    return True
+
+                except Exception as e:
+                    logger.warning(f"Cookies invalid or expired, doing fresh login: {e}")
+
+            # Fresh login required
             await self.client.login(
                 auth_info_1=settings.dummy_username,
                 auth_info_2=settings.dummy_email,
                 password=settings.dummy_password,
             )
+
+            # Save cookies for next time
+            self.client.save_cookies(str(COOKIE_FILE))
+            logger.info("Saved cookies to file")
 
             # Get user objects for context switching
             self.dummy_user = await self.client.get_user_by_screen_name(
@@ -108,8 +149,8 @@ class GhostDelegate:
             return False
 
         try:
-            # Switch to main account context
-            self.client.set_active_user(self.main_user)
+            # Switch to main account context using delegation
+            self.client.set_delegate_account(self.main_user.id)
             logger.debug(f"Switched to main account: @{settings.main_account_handle}")
 
             # Get the tweet and reply
@@ -119,8 +160,34 @@ class GhostDelegate:
             logger.info(f"Posted reply as @{settings.main_account_handle}")
             return True
 
+        except TooManyRequests as e:
+            logger.error(f"Rate limited by Twitter - try again later: {e}")
+            return False
+
+        except Unauthorized as e:
+            logger.error(f"Authentication failed - session may have expired: {e}")
+            self._is_authenticated = False
+            return False
+
+        except Forbidden as e:
+            logger.error(f"Permission denied - check delegation settings: {e}")
+            return False
+
+        except BadRequest as e:
+            # Could be duplicate tweet or invalid content
+            error_msg = str(e).lower()
+            if "duplicate" in error_msg:
+                logger.warning(f"Duplicate tweet detected for tweet_id={tweet_id}")
+            else:
+                logger.error(f"Bad request - invalid content or parameters: {e}")
+            return False
+
+        except TwitterException as e:
+            logger.error(f"Twitter API error: {e}")
+            return False
+
         except Exception as e:
-            logger.error(f"Failed to post as main: {e}")
+            logger.error(f"Unexpected error posting as main: {e}")
             return False
 
         finally:
@@ -128,10 +195,10 @@ class GhostDelegate:
             await self._revert_to_dummy()
 
     async def _revert_to_dummy(self) -> None:
-        """Revert context back to the dummy account."""
+        """Revert context back to the dummy account by clearing delegation."""
         try:
-            if self.client and self.dummy_user:
-                self.client.set_active_user(self.dummy_user)
+            if self.client:
+                self.client.set_delegate_account(None)
                 logger.debug(f"Reverted to dummy: @{settings.dummy_username}")
         except Exception as e:
             logger.error(f"Failed to revert to dummy: {e}")

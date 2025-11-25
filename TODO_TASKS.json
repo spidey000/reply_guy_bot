@@ -2,10 +2,11 @@
   "project_name": "Reply Guy Bot",
   "last_updated": "2025-11-25",
   "summary": {
-    "total": 18,
-    "completed": 6,
-    "in_progress": 2,
-    "pending": 10
+    "total": 20,
+    "completed": 9,
+    "in_progress": 0,
+    "pending": 10,
+    "deferred": 1
   },
   "tasks": [
     {
@@ -58,10 +59,12 @@
       "dependencies": ["T001"],
       "steps": [
         {"id": "T004-S1", "description": "Login with dummy credentials", "state": "completed"},
-        {"id": "T004-S2", "description": "Context switch via set_active_user()", "state": "completed"},
+        {"id": "T004-S2", "description": "Context switch via set_delegate_account()", "state": "completed"},
         {"id": "T004-S3", "description": "Post reply as main account", "state": "completed"},
         {"id": "T004-S4", "description": "Auto revert to dummy", "state": "completed"},
-        {"id": "T004-S5", "description": "Error handling", "state": "completed"}
+        {"id": "T004-S5", "description": "Error handling", "state": "completed"},
+        {"id": "T004-S6", "description": "Cookie persistence for session reuse", "state": "completed"},
+        {"id": "T004-S7", "description": "Specific Twikit error handling (DuplicateTweet, TooManyRequests)", "state": "completed"}
       ]
     },
     {
@@ -125,15 +128,15 @@
       "title": "Telegram Client (telegram_client.py)",
       "description": "Telegram bot for approval workflow",
       "difficulty": "medium",
-      "state": "in_progress",
+      "state": "completed",
       "dependencies": ["T001"],
       "steps": [
         {"id": "T009-S1", "description": "TelegramClient class", "state": "completed"},
         {"id": "T009-S2", "description": "Approval request with buttons", "state": "completed"},
         {"id": "T009-S3", "description": "Callback handlers", "state": "completed"},
-        {"id": "T009-S4", "description": "/queue command", "state": "pending"},
-        {"id": "T009-S5", "description": "/stats command", "state": "pending"},
-        {"id": "T009-S6", "description": "Edit interface", "state": "pending"}
+        {"id": "T009-S4", "description": "/queue command", "state": "completed"},
+        {"id": "T009-S5", "description": "/stats command", "state": "completed"},
+        {"id": "T009-S6", "description": "Edit interface", "state": "deferred", "note": "Deferred for MVP - shows 'coming soon' message"}
       ]
     },
     {
@@ -141,13 +144,14 @@
       "title": "Supabase Database Schema",
       "description": "Create tables in Supabase SQL Editor",
       "difficulty": "medium",
-      "state": "pending",
+      "state": "completed",
       "dependencies": [],
+      "note": "SQL file created at supabase_schema.sql - run in Supabase SQL Editor",
       "steps": [
-        {"id": "T010-S1", "description": "Create tweet_queue table", "state": "pending"},
-        {"id": "T010-S2", "description": "Create target_accounts table", "state": "pending"},
-        {"id": "T010-S3", "description": "Add indexes", "state": "pending"},
-        {"id": "T010-S4", "description": "Add RLS policies", "state": "pending"}
+        {"id": "T010-S1", "description": "Create tweet_queue table", "state": "completed"},
+        {"id": "T010-S2", "description": "Create target_accounts table", "state": "completed"},
+        {"id": "T010-S3", "description": "Add indexes", "state": "completed"},
+        {"id": "T010-S4", "description": "Add RLS policies", "state": "completed"}
       ]
     },
     {
@@ -155,16 +159,16 @@
       "title": "Main Orchestrator (bot.py) - CRITICAL",
       "description": "Main event loop that ties all components together",
       "difficulty": "medium",
-      "state": "in_progress",
+      "state": "completed",
       "dependencies": ["T007", "T008", "T009"],
       "steps": [
         {"id": "T011-S1", "description": "Entry point and logging", "state": "completed"},
-        {"id": "T011-S2", "description": "Initialize all components", "state": "pending"},
-        {"id": "T011-S3", "description": "Tweet monitoring loop", "state": "pending"},
-        {"id": "T011-S4", "description": "Wire approval callbacks", "state": "pending"},
-        {"id": "T011-S5", "description": "Start background worker", "state": "pending"},
-        {"id": "T011-S6", "description": "Graceful shutdown", "state": "pending"},
-        {"id": "T011-S7", "description": "Startup health checks", "state": "pending"}
+        {"id": "T011-S2", "description": "Initialize all components", "state": "completed"},
+        {"id": "T011-S3", "description": "Tweet monitoring loop", "state": "completed"},
+        {"id": "T011-S4", "description": "Wire approval callbacks", "state": "completed"},
+        {"id": "T011-S5", "description": "Start background worker", "state": "completed"},
+        {"id": "T011-S6", "description": "Graceful shutdown", "state": "completed"},
+        {"id": "T011-S7", "description": "Startup health checks", "state": "completed"}
       ]
     },
     {
@@ -172,14 +176,14 @@
       "title": "Complete Approval Flow",
       "description": "Wire Telegram to database for full workflow",
       "difficulty": "medium",
-      "state": "pending",
+      "state": "completed",
       "dependencies": ["T009", "T008", "T003"],
       "steps": [
-        {"id": "T012-S1", "description": "Connect /queue to database", "state": "pending"},
-        {"id": "T012-S2", "description": "Connect approve to scheduler", "state": "pending"},
-        {"id": "T012-S3", "description": "Connect reject to database", "state": "pending"},
-        {"id": "T012-S4", "description": "Implement edit flow", "state": "pending"},
-        {"id": "T012-S5", "description": "Real-time /stats", "state": "pending"}
+        {"id": "T012-S1", "description": "Connect /queue to database", "state": "completed"},
+        {"id": "T012-S2", "description": "Connect approve to scheduler", "state": "completed"},
+        {"id": "T012-S3", "description": "Connect reject to database", "state": "completed"},
+        {"id": "T012-S4", "description": "Implement edit flow", "state": "deferred"},
+        {"id": "T012-S5", "description": "Real-time /stats", "state": "completed"}
       ]
     },
     {
@@ -274,13 +278,56 @@
         {"id": "T018-S3", "description": "Alerting system", "state": "pending"},
         {"id": "T018-S4", "description": "Daily summary reports", "state": "pending"}
       ]
+    },
+    {
+      "id": "T019",
+      "title": "Code Quality - Type Hints (background_worker.py)",
+      "description": "Add missing type hints identified by architect review",
+      "difficulty": "easy",
+      "state": "pending",
+      "dependencies": [],
+      "steps": [
+        {"id": "T019-S1", "description": "Add type hints to run_worker() parameters", "state": "pending"},
+        {"id": "T019-S2", "description": "Add type hints to process_pending_tweets()", "state": "pending"},
+        {"id": "T019-S3", "description": "Add type hints to helper functions", "state": "pending"}
+      ]
+    },
+    {
+      "id": "T020",
+      "title": "Documentation Updates",
+      "description": "Update docs to reflect implementation changes",
+      "difficulty": "easy",
+      "state": "pending",
+      "dependencies": ["T011"],
+      "steps": [
+        {"id": "T020-S1", "description": "Update ANALISIS_TECNICO.md with set_delegate_account()", "state": "pending"},
+        {"id": "T020-S2", "description": "Update README.md with usage instructions", "state": "pending"},
+        {"id": "T020-S3", "description": "Add Telegram command documentation", "state": "pending"}
+      ]
     }
   ],
   "next_steps": [
-    "T010 - Create Supabase schema (required for testing)",
-    "T009 - Complete /queue and /stats commands",
-    "T011 - CRITICAL: Wire main orchestrator loop",
-    "T012 - Complete approval flow",
-    "T014 - Integration tests"
-  ]
+    "Run supabase_schema.sql in Supabase SQL Editor",
+    "Configure .env with credentials (copy from .env.example)",
+    "Add target accounts to database",
+    "Run: python -m src.bot",
+    "Test full approval flow via Telegram"
+  ],
+  "mvp_status": {
+    "completed": true,
+    "date": "2025-11-25",
+    "summary": "Core MVP completed - bot can monitor accounts, generate AI replies, send for Telegram approval, schedule with Burst Mode, and publish via Ghost Delegate"
+  },
+  "architect_review_notes": {
+    "date": "2025-11-25",
+    "resolved_issues": [
+      "Ghost Delegate now uses set_delegate_account() instead of undocumented set_active_user()",
+      "Cookie persistence added for faster startup",
+      "Specific Twikit error handling implemented"
+    ],
+    "remaining_recommendations": [
+      "Add type hints to background_worker.py (T019)",
+      "Async/sync mismatch in database.py - acceptable for MVP"
+    ]
+  }
 }

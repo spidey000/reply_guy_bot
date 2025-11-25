@@ -75,10 +75,17 @@ class TelegramClient:
         self.chat_id = chat_id or settings.telegram_chat_id
         self.app: Optional[Application] = None
 
+        # Database reference for commands (injected via set_database)
+        self._db = None
+
         # Callbacks for approval actions
         self._on_approve: Optional[Callable] = None
         self._on_reject: Optional[Callable] = None
         self._on_edit: Optional[Callable] = None
+
+    def set_database(self, db) -> None:
+        """Inject database for /queue and /stats commands."""
+        self._db = db
 
     async def initialize(self) -> None:
         """Initialize the Telegram bot application."""
@@ -196,18 +203,78 @@ class TelegramClient:
         update: Update,
         context: ContextTypes.DEFAULT_TYPE,
     ) -> None:
-        """Handle /queue command."""
-        # TODO: Implement queue display
-        await update.message.reply_text("📋 Queue is empty")
+        """Handle /queue command - show pending tweets."""
+        if not self._db:
+            await update.message.reply_text("❌ Database not connected")
+            return
+
+        try:
+            pending = await self._db.get_pending_tweets()
+
+            if not pending:
+                await update.message.reply_text("📋 Queue is empty - no pending tweets")
+                return
+
+            # Format queue message
+            lines = ["📋 *Pending Tweets*\n"]
+            for i, tweet in enumerate(pending[:10], 1):  # Show max 10
+                author = tweet.get("target_author", "unknown")
+                reply_preview = tweet.get("reply_text", "")[:50] + "..."
+                scheduled = tweet.get("scheduled_at", "Not scheduled")
+                status = tweet.get("status", "pending")
+
+                lines.append(
+                    f"{i}. *@{author}*\n"
+                    f"   Reply: _{reply_preview}_\n"
+                    f"   Status: {status}\n"
+                )
+
+            if len(pending) > 10:
+                lines.append(f"\n_...and {len(pending) - 10} more_")
+
+            await update.message.reply_text(
+                "\n".join(lines),
+                parse_mode="Markdown",
+            )
+
+        except Exception as e:
+            logger.error(f"Error fetching queue: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
 
     async def _cmd_stats(
         self,
         update: Update,
         context: ContextTypes.DEFAULT_TYPE,
     ) -> None:
-        """Handle /stats command."""
-        # TODO: Implement stats display
-        await update.message.reply_text("📊 Stats coming soon...")
+        """Handle /stats command - show bot statistics."""
+        if not self._db:
+            await update.message.reply_text("❌ Database not connected")
+            return
+
+        try:
+            pending_count = await self._db.get_pending_count()
+            posted_today = await self._db.get_posted_today_count()
+
+            # Burst Mode status
+            burst_status = "Enabled" if settings.burst_mode_enabled else "Disabled"
+            quiet_hours = f"{settings.quiet_hours_start:02d}:00 - {settings.quiet_hours_end:02d}:00"
+
+            message = (
+                f"📊 *Bot Statistics*\n\n"
+                f"*Queue:*\n"
+                f"  Pending: {pending_count}\n"
+                f"  Posted today: {posted_today}\n\n"
+                f"*Burst Mode:* {burst_status}\n"
+                f"  Quiet hours: {quiet_hours}\n"
+                f"  Delay: {settings.min_delay_minutes}-{settings.max_delay_minutes} min\n\n"
+                f"*Account:* @{settings.main_account_handle}"
+            )
+
+            await update.message.reply_text(message, parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error fetching stats: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
 
     # =========================================================================
     # Callback Handler
@@ -232,8 +299,12 @@ class TelegramClient:
             await self._on_reject(tweet_id)
             await query.edit_message_text("❌ Rejected")
 
-        elif action == "edit" and self._on_edit:
-            await self._on_edit(tweet_id)
+        elif action == "edit":
+            # Edit interface deferred for MVP
+            await query.message.reply_text(
+                "✏️ Edit feature coming soon!\n\n"
+                "For now, please reject and wait for a new suggestion."
+            )
 
     # =========================================================================
     # Callback Registration
