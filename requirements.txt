@@ -1,0 +1,19 @@
+# =============================================================================
+# Reply Guy Bot - Production Dependencies
+# =============================================================================
+
+# Twitter/X client
+twikit>=2.0.0
+
+# AI client (OpenAI API compatible)
+openai>=1.0.0
+
+# Telegram bot
+python-telegram-bot>=21.0
+
+# Database
+supabase>=2.0.0
+
+# Configuration management
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0

@@ -1,0 +1,286 @@
+{
+  "project_name": "Reply Guy Bot",
+  "last_updated": "2025-11-25",
+  "summary": {
+    "total": 18,
+    "completed": 6,
+    "in_progress": 2,
+    "pending": 10
+  },
+  "tasks": [
+    {
+      "id": "T001",
+      "title": "Configuration System (settings.py)",
+      "description": "Pydantic Settings for centralized .env configuration",
+      "difficulty": "easy",
+      "state": "completed",
+      "dependencies": [],
+      "steps": [
+        {"id": "T001-S1", "description": "Create Settings class", "state": "completed"},
+        {"id": "T001-S2", "description": "Add all env variable mappings", "state": "completed"},
+        {"id": "T001-S3", "description": "Add validation and defaults", "state": "completed"}
+      ]
+    },
+    {
+      "id": "T002",
+      "title": "AI Prompts Configuration (prompts.py)",
+      "description": "System prompts and reply templates for AI generation",
+      "difficulty": "easy",
+      "state": "completed",
+      "dependencies": [],
+      "steps": [
+        {"id": "T002-S1", "description": "Create SYSTEM_PROMPT", "state": "completed"},
+        {"id": "T002-S2", "description": "Create REPLY_TEMPLATE", "state": "completed"},
+        {"id": "T002-S3", "description": "Add TONE_MODIFIERS", "state": "completed"}
+      ]
+    },
+    {
+      "id": "T003",
+      "title": "Burst Mode Scheduler (scheduler.py)",
+      "description": "Humanized scheduling with delays, quiet hours, jitter",
+      "difficulty": "easy",
+      "state": "completed",
+      "dependencies": ["T001"],
+      "steps": [
+        {"id": "T003-S1", "description": "Random delay calculation (15-120 min)", "state": "completed"},
+        {"id": "T003-S2", "description": "Quiet hours enforcement", "state": "completed"},
+        {"id": "T003-S3", "description": "Temporal jitter (0-300s)", "state": "completed"},
+        {"id": "T003-S4", "description": "Midnight-spanning quiet periods", "state": "completed"},
+        {"id": "T003-S5", "description": "Human-readable descriptions", "state": "completed"}
+      ]
+    },
+    {
+      "id": "T004",
+      "title": "Ghost Delegate (x_delegate.py)",
+      "description": "Secure credential protection using dummy account delegation",
+      "difficulty": "easy",
+      "state": "completed",
+      "dependencies": ["T001"],
+      "steps": [
+        {"id": "T004-S1", "description": "Login with dummy credentials", "state": "completed"},
+        {"id": "T004-S2", "description": "Context switch via set_active_user()", "state": "completed"},
+        {"id": "T004-S3", "description": "Post reply as main account", "state": "completed"},
+        {"id": "T004-S4", "description": "Auto revert to dummy", "state": "completed"},
+        {"id": "T004-S5", "description": "Error handling", "state": "completed"}
+      ]
+    },
+    {
+      "id": "T005",
+      "title": "Background Worker (background_worker.py)",
+      "description": "Async loop for processing scheduled tweets",
+      "difficulty": "easy",
+      "state": "completed",
+      "dependencies": ["T003", "T004"],
+      "steps": [
+        {"id": "T005-S1", "description": "Continuous async loop", "state": "completed"},
+        {"id": "T005-S2", "description": "Query ready-to-publish tweets", "state": "completed"},
+        {"id": "T005-S3", "description": "Ghost Delegate integration", "state": "completed"},
+        {"id": "T005-S4", "description": "Error handling and retry", "state": "completed"}
+      ]
+    },
+    {
+      "id": "T006",
+      "title": "Test Suite (tests/)",
+      "description": "Pytest fixtures and initial test coverage",
+      "difficulty": "easy",
+      "state": "completed",
+      "dependencies": ["T001", "T003"],
+      "steps": [
+        {"id": "T006-S1", "description": "Create conftest.py with fixtures", "state": "completed"},
+        {"id": "T006-S2", "description": "Scheduler tests", "state": "completed"},
+        {"id": "T006-S3", "description": "Configure pytest-asyncio", "state": "completed"}
+      ]
+    },
+    {
+      "id": "T007",
+      "title": "AI Client (ai_client.py)",
+      "description": "OpenAI-compatible client for reply generation",
+      "difficulty": "medium",
+      "state": "completed",
+      "dependencies": ["T001", "T002"],
+      "steps": [
+        {"id": "T007-S1", "description": "AIClient class with OpenAI SDK", "state": "completed"},
+        {"id": "T007-S2", "description": "generate_reply() method", "state": "completed"},
+        {"id": "T007-S3", "description": "Response cleaning + char limit", "state": "completed"},
+        {"id": "T007-S4", "description": "health_check() endpoint", "state": "completed"},
+        {"id": "T007-S5", "description": "Retry logic with backoff", "state": "pending"}
+      ]
+    },
+    {
+      "id": "T008",
+      "title": "Database Client (database.py)",
+      "description": "Supabase integration for persistence",
+      "difficulty": "medium",
+      "state": "completed",
+      "dependencies": ["T001"],
+      "steps": [
+        {"id": "T008-S1", "description": "Database class with Supabase client", "state": "completed"},
+        {"id": "T008-S2", "description": "Tweet queue CRUD operations", "state": "completed"},
+        {"id": "T008-S3", "description": "Target accounts operations", "state": "completed"},
+        {"id": "T008-S4", "description": "Statistics methods", "state": "completed"}
+      ]
+    },
+    {
+      "id": "T009",
+      "title": "Telegram Client (telegram_client.py)",
+      "description": "Telegram bot for approval workflow",
+      "difficulty": "medium",
+      "state": "in_progress",
+      "dependencies": ["T001"],
+      "steps": [
+        {"id": "T009-S1", "description": "TelegramClient class", "state": "completed"},
+        {"id": "T009-S2", "description": "Approval request with buttons", "state": "completed"},
+        {"id": "T009-S3", "description": "Callback handlers", "state": "completed"},
+        {"id": "T009-S4", "description": "/queue command", "state": "pending"},
+        {"id": "T009-S5", "description": "/stats command", "state": "pending"},
+        {"id": "T009-S6", "description": "Edit interface", "state": "pending"}
+      ]
+    },
+    {
+      "id": "T010",
+      "title": "Supabase Database Schema",
+      "description": "Create tables in Supabase SQL Editor",
+      "difficulty": "medium",
+      "state": "pending",
+      "dependencies": [],
+      "steps": [
+        {"id": "T010-S1", "description": "Create tweet_queue table", "state": "pending"},
+        {"id": "T010-S2", "description": "Create target_accounts table", "state": "pending"},
+        {"id": "T010-S3", "description": "Add indexes", "state": "pending"},
+        {"id": "T010-S4", "description": "Add RLS policies", "state": "pending"}
+      ]
+    },
+    {
+      "id": "T011",
+      "title": "Main Orchestrator (bot.py) - CRITICAL",
+      "description": "Main event loop that ties all components together",
+      "difficulty": "medium",
+      "state": "in_progress",
+      "dependencies": ["T007", "T008", "T009"],
+      "steps": [
+        {"id": "T011-S1", "description": "Entry point and logging", "state": "completed"},
+        {"id": "T011-S2", "description": "Initialize all components", "state": "pending"},
+        {"id": "T011-S3", "description": "Tweet monitoring loop", "state": "pending"},
+        {"id": "T011-S4", "description": "Wire approval callbacks", "state": "pending"},
+        {"id": "T011-S5", "description": "Start background worker", "state": "pending"},
+        {"id": "T011-S6", "description": "Graceful shutdown", "state": "pending"},
+        {"id": "T011-S7", "description": "Startup health checks", "state": "pending"}
+      ]
+    },
+    {
+      "id": "T012",
+      "title": "Complete Approval Flow",
+      "description": "Wire Telegram to database for full workflow",
+      "difficulty": "medium",
+      "state": "pending",
+      "dependencies": ["T009", "T008", "T003"],
+      "steps": [
+        {"id": "T012-S1", "description": "Connect /queue to database", "state": "pending"},
+        {"id": "T012-S2", "description": "Connect approve to scheduler", "state": "pending"},
+        {"id": "T012-S3", "description": "Connect reject to database", "state": "pending"},
+        {"id": "T012-S4", "description": "Implement edit flow", "state": "pending"},
+        {"id": "T012-S5", "description": "Real-time /stats", "state": "pending"}
+      ]
+    },
+    {
+      "id": "T013",
+      "title": "Rate Limiting",
+      "description": "Avoid Twitter API limits",
+      "difficulty": "medium",
+      "state": "pending",
+      "dependencies": ["T011"],
+      "steps": [
+        {"id": "T013-S1", "description": "Track API call counts", "state": "pending"},
+        {"id": "T013-S2", "description": "Sliding window limiter", "state": "pending"},
+        {"id": "T013-S3", "description": "Limit warnings", "state": "pending"},
+        {"id": "T013-S4", "description": "Auto slowdown", "state": "pending"},
+        {"id": "T013-S5", "description": "Daily caps", "state": "pending"}
+      ]
+    },
+    {
+      "id": "T014",
+      "title": "Integration Testing",
+      "description": "End-to-end workflow testing",
+      "difficulty": "hard",
+      "state": "pending",
+      "dependencies": ["T011", "T012"],
+      "steps": [
+        {"id": "T014-S1", "description": "Set up test environment with mocks", "state": "pending"},
+        {"id": "T014-S2", "description": "Happy path test", "state": "pending"},
+        {"id": "T014-S3", "description": "Rejection path test", "state": "pending"},
+        {"id": "T014-S4", "description": "Edit path test", "state": "pending"},
+        {"id": "T014-S5", "description": "Error scenarios", "state": "pending"},
+        {"id": "T014-S6", "description": "80%+ coverage", "state": "pending"}
+      ]
+    },
+    {
+      "id": "T015",
+      "title": "Ghost Delegate Security Hardening",
+      "description": "Verify and harden security implementation",
+      "difficulty": "hard",
+      "state": "pending",
+      "dependencies": ["T011"],
+      "steps": [
+        {"id": "T015-S1", "description": "Security review", "state": "pending"},
+        {"id": "T015-S2", "description": "Session validation", "state": "pending"},
+        {"id": "T015-S3", "description": "Auto switch-back on error", "state": "pending"},
+        {"id": "T015-S4", "description": "Emergency kill switch", "state": "pending"},
+        {"id": "T015-S5", "description": "Audit logging", "state": "pending"}
+      ]
+    },
+    {
+      "id": "T016",
+      "title": "Advanced Anti-Detection",
+      "description": "Enhanced Burst Mode techniques",
+      "difficulty": "hard",
+      "state": "pending",
+      "dependencies": ["T011", "T015"],
+      "steps": [
+        {"id": "T016-S1", "description": "Human-like typing delays", "state": "pending"},
+        {"id": "T016-S2", "description": "Random browsing behavior", "state": "pending"},
+        {"id": "T016-S3", "description": "Variable session lengths", "state": "pending"},
+        {"id": "T016-S4", "description": "Weekend/weekday patterns", "state": "pending"},
+        {"id": "T016-S5", "description": "Gradual activity ramp-up", "state": "pending"},
+        {"id": "T016-S6", "description": "Proxy/IP rotation", "state": "pending"}
+      ]
+    },
+    {
+      "id": "T017",
+      "title": "Error Recovery & Resilience",
+      "description": "Comprehensive error handling",
+      "difficulty": "hard",
+      "state": "pending",
+      "dependencies": ["T011", "T014"],
+      "steps": [
+        {"id": "T017-S1", "description": "Circuit breaker pattern", "state": "pending"},
+        {"id": "T017-S2", "description": "Exponential backoff", "state": "pending"},
+        {"id": "T017-S3", "description": "Dead letter queue", "state": "pending"},
+        {"id": "T017-S4", "description": "DB connection recovery", "state": "pending"},
+        {"id": "T017-S5", "description": "Crash recovery", "state": "pending"},
+        {"id": "T017-S6", "description": "Health monitoring", "state": "pending"},
+        {"id": "T017-S7", "description": "Critical error alerts", "state": "pending"}
+      ]
+    },
+    {
+      "id": "T018",
+      "title": "Analytics & Monitoring",
+      "description": "Metrics and dashboard",
+      "difficulty": "hard",
+      "state": "pending",
+      "dependencies": ["T011", "T014"],
+      "steps": [
+        {"id": "T018-S1", "description": "Metrics collection", "state": "pending"},
+        {"id": "T018-S2", "description": "Telegram dashboard", "state": "pending"},
+        {"id": "T018-S3", "description": "Alerting system", "state": "pending"},
+        {"id": "T018-S4", "description": "Daily summary reports", "state": "pending"}
+      ]
+    }
+  ],
+  "next_steps": [
+    "T010 - Create Supabase schema (required for testing)",
+    "T009 - Complete /queue and /stats commands",
+    "T011 - CRITICAL: Wire main orchestrator loop",
+    "T012 - Complete approval flow",
+    "T014 - Integration tests"
+  ]
+}

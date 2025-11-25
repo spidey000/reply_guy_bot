@@ -1,0 +1,43 @@
+# =============================================================================
+# Reply Guy Bot - Docker Ignore
+# =============================================================================
+
+# === Git ===
+.git
+.gitignore
+
+# === Environment ===
+.env
+.env.*
+
+# === Documentation ===
+*.md
+!README.md
+docs/
+
+# === Python ===
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.coverage
+htmlcov/
+
+# === Virtual Environments ===
+.venv
+venv
+ENV
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+
+# === Tests (optional: include if you want to run tests in container) ===
+tests/
+
+# === Development files ===
+*.log
+.env.example
+docker-compose.override.yml
