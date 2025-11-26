@@ -3,9 +3,9 @@
   "last_updated": "2025-11-25",
   "summary": {
     "total": 20,
-    "completed": 9,
+    "completed": 10,
     "in_progress": 0,
-    "pending": 10,
+    "pending": 9,
     "deferred": 1
   },
   "tasks": [
@@ -297,12 +297,12 @@
       "title": "Documentation Updates",
       "description": "Update docs to reflect implementation changes",
       "difficulty": "easy",
-      "state": "pending",
+      "state": "completed",
       "dependencies": ["T011"],
       "steps": [
-        {"id": "T020-S1", "description": "Update ANALISIS_TECNICO.md with set_delegate_account()", "state": "pending"},
-        {"id": "T020-S2", "description": "Update README.md with usage instructions", "state": "pending"},
-        {"id": "T020-S3", "description": "Add Telegram command documentation", "state": "pending"}
+        {"id": "T020-S1", "description": "Update ANALISIS_TECNICO.md with set_delegate_account()", "state": "completed"},
+        {"id": "T020-S2", "description": "Update README.md with usage instructions", "state": "completed"},
+        {"id": "T020-S3", "description": "Add Telegram command documentation", "state": "completed"}
       ]
     }
   ],
