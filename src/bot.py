@@ -30,13 +30,16 @@ import logging
 import signal
 from typing import Optional, Set
 
+from cryptography.fernet import Fernet
+
 from config import settings
 from src.ai_client import AIClient
 from src.background_worker import run_worker
+from src.circuit_breaker import CircuitBreaker
 from src.database import Database
 from src.scheduler import calculate_schedule_time, get_delay_description
 from src.telegram_client import TelegramClient
-from src.x_delegate import GhostDelegate
+from src.x_delegate import GhostDelegate, SessionHealth
 
 # Configure logging
 logging.basicConfig(
@@ -69,6 +72,55 @@ class ReplyGuyBot:
         self._seen_tweets: Set[str] = set()
         self._worker_task: Optional[asyncio.Task] = None
         self._monitor_task: Optional[asyncio.Task] = None
+        self._session_health_task: Optional[asyncio.Task] = None
+
+        # Session health monitoring (T021)
+        self._session_degraded = False  # Graceful degradation flag
+
+        # Circuit breakers for external services (T017-S1)
+        self._circuit_breakers: dict[str, CircuitBreaker] = {}
+
+    def _validate_config(self) -> None:
+        """
+        Validate required configuration at startup.
+
+        Raises:
+            ValueError: If required configuration is missing or invalid.
+        """
+        # Required settings that must be present
+        required_settings = [
+            ("DUMMY_USERNAME", settings.dummy_username),
+            ("DUMMY_EMAIL", settings.dummy_email),
+            ("DUMMY_PASSWORD", settings.dummy_password),
+            ("MAIN_ACCOUNT_HANDLE", settings.main_account_handle),
+            ("TELEGRAM_BOT_TOKEN", settings.telegram_bot_token),
+            ("TELEGRAM_CHAT_ID", settings.telegram_chat_id),
+            ("SUPABASE_URL", settings.supabase_url),
+            ("SUPABASE_KEY", settings.supabase_key),
+            ("AI_API_KEY", settings.ai_api_key),
+        ]
+
+        missing = [name for name, value in required_settings if not value]
+        if missing:
+            raise ValueError(f"Missing required configuration: {', '.join(missing)}")
+
+        # Validate cookie encryption key if provided
+        if settings.cookie_encryption_key:
+            try:
+                Fernet(settings.cookie_encryption_key.encode())
+            except Exception as e:
+                raise ValueError(
+                    f"Invalid COOKIE_ENCRYPTION_KEY format: {e}. "
+                    "Generate a valid key with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+                )
+        else:
+            logger.warning(
+                "SECURITY WARNING: COOKIE_ENCRYPTION_KEY not set. "
+                "Cookies will be stored in plaintext. "
+                "Generate a key with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+            )
+
+        logger.info("Configuration validation passed")
 
     async def initialize(self) -> bool:
         """
@@ -80,6 +132,9 @@ class ReplyGuyBot:
         logger.info("Initializing components...")
 
         try:
+            # 0. Validate configuration first (fail fast)
+            self._validate_config()
+
             # 1. Initialize Database
             self.db = Database()
             logger.info("Database initialized")
@@ -105,19 +160,58 @@ class ReplyGuyBot:
 
             # 5. Initialize Ghost Delegate
             self.ghost = GhostDelegate()
-            if not await self.ghost.login_dummy():
+
+            # Register session alert callback (T021-S4)
+            self.ghost.set_session_alert_callback(self._handle_session_alert)
+
+            # Login with database for cooldown tracking
+            if not await self.ghost.login_dummy(db=self.db):
                 logger.error("Failed to login Ghost Delegate")
                 return False
             logger.info("Ghost Delegate authenticated")
 
-            # 6. Pre-populate seen tweets from database to avoid duplicates
+            # Perform initial session health check (T021-S1)
+            initial_health = await self.ghost.check_session_health(auto_refresh=False, db=self.db)
+            logger.info(f"Initial session health: {initial_health.value}")
+
+            # 6. Initialize circuit breakers (T017-S1)
+            self._circuit_breakers = {
+                "twitter": CircuitBreaker(
+                    name="twitter_api",
+                    failure_threshold=5,
+                    recovery_timeout=120,
+                    half_open_max_calls=3,
+                ),
+                "ai": CircuitBreaker(
+                    name="ai_service",
+                    failure_threshold=3,
+                    recovery_timeout=60,
+                    half_open_max_calls=2,
+                ),
+            }
+            logger.info("Circuit breakers initialized")
+
+            # 7. Pre-populate seen tweets from database to avoid duplicates
             await self._load_seen_tweets()
+
+            # 8. Perform crash recovery (T017-S5)
+            await self._perform_crash_recovery()
 
             logger.info("All components initialized successfully")
             return True
 
         except Exception as e:
             logger.error(f"Failed to initialize components: {e}")
+            # Send error alert if telegram is initialized
+            if self.telegram:
+                try:
+                    await self.telegram.send_error_alert(
+                        "initialization_failed",
+                        "Bot initialization failed",
+                        {"error": str(e)}
+                    )
+                except Exception:
+                    pass
             return False
 
     async def _load_seen_tweets(self) -> None:
@@ -131,6 +225,38 @@ class ReplyGuyBot:
             logger.info(f"Loaded {len(self._seen_tweets)} existing tweets to skip")
         except Exception as e:
             logger.warning(f"Could not load seen tweets: {e}")
+
+    async def _perform_crash_recovery(self) -> None:
+        """
+        Perform crash recovery on startup (T017-S5).
+
+        This method:
+        1. Recovers stale/failed tweets
+        2. Processes dead letter queue items
+        3. Validates pending operations
+        """
+        try:
+            logger.info("Performing crash recovery...")
+
+            # Recover stale tweets
+            recovered = await self.db.recover_stale_tweets(timeout_minutes=30)
+            if recovered > 0:
+                logger.info(f"Recovered {recovered} stale tweets")
+
+            # Get dead letter queue stats
+            dlq_stats = await self.db.get_dead_letter_stats()
+            if dlq_stats["pending"] > 0:
+                logger.warning(
+                    f"Dead letter queue has {dlq_stats['pending']} pending items, "
+                    f"{dlq_stats['exhausted']} exhausted"
+                )
+
+            logger.info("Crash recovery completed")
+
+        except Exception as e:
+            logger.error(f"Crash recovery failed: {e}")
+            # Don't fail startup if recovery fails
+            pass
 
     async def health_check(self) -> bool:
         """
@@ -153,6 +279,82 @@ class ReplyGuyBot:
 
         return all(checks.values())
 
+    async def health_check_all(self) -> dict:
+        """
+        Comprehensive health check of all services (T017-S6).
+
+        Returns:
+            Dictionary with health status of all components.
+        """
+        logger.info("Running comprehensive health checks...")
+
+        health = {
+            "database": {
+                "status": "unknown",
+                "connected": False,
+                "circuit_breaker": None,
+            },
+            "twitter": {
+                "status": "unknown",
+                "authenticated": False,
+                "circuit_breaker": None,
+            },
+            "ai": {
+                "status": "unknown",
+                "available": False,
+                "circuit_breaker": None,
+            },
+            "telegram": {
+                "status": "unknown",
+                "connected": False,
+            },
+            "overall": "unknown",
+        }
+
+        try:
+            # Database health
+            db_healthy = await self._check_db()
+            health["database"]["status"] = "healthy" if db_healthy else "unhealthy"
+            health["database"]["connected"] = db_healthy
+            if self.db and hasattr(self.db, "circuit_breaker"):
+                health["database"]["circuit_breaker"] = self.db.circuit_breaker.get_status()
+
+            # Twitter/Ghost health
+            twitter_healthy = self.ghost.is_authenticated if self.ghost else False
+            health["twitter"]["status"] = "healthy" if twitter_healthy else "unhealthy"
+            health["twitter"]["authenticated"] = twitter_healthy
+            if "twitter" in self._circuit_breakers:
+                health["twitter"]["circuit_breaker"] = self._circuit_breakers["twitter"].get_status()
+
+            # AI health
+            ai_healthy = await self._check_ai()
+            health["ai"]["status"] = "healthy" if ai_healthy else "unhealthy"
+            health["ai"]["available"] = ai_healthy
+            if "ai" in self._circuit_breakers:
+                health["ai"]["circuit_breaker"] = self._circuit_breakers["ai"].get_status()
+
+            # Telegram health (if we're running, telegram is working)
+            telegram_healthy = self.telegram is not None
+            health["telegram"]["status"] = "healthy" if telegram_healthy else "unhealthy"
+            health["telegram"]["connected"] = telegram_healthy
+
+            # Overall health
+            all_healthy = db_healthy and twitter_healthy and ai_healthy and telegram_healthy
+            health["overall"] = "healthy" if all_healthy else "degraded"
+
+            # Log summary
+            logger.info(f"Health check complete: {health['overall']}")
+            for service, status in health.items():
+                if service != "overall" and isinstance(status, dict):
+                    logger.info(f"  {service}: {status['status']}")
+
+            return health
+
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
+            health["overall"] = "error"
+            return health
+
     async def _check_ai(self) -> bool:
         """Check AI service health."""
         try:
@@ -163,10 +365,16 @@ class ReplyGuyBot:
     async def _check_db(self) -> bool:
         """Check database connection."""
         try:
-            await self.db.get_pending_count()
-            return True
+            return await self.db.health_check()
         except Exception:
             return False
+
+    def _get_circuit_status(self) -> dict:
+        """Get status of all circuit breakers."""
+        return {
+            name: breaker.get_status()
+            for name, breaker in self._circuit_breakers.items()
+        }
 
     async def start(self) -> None:
         """
@@ -174,8 +382,9 @@ class ReplyGuyBot:
 
         This method:
         1. Starts the background worker for publishing scheduled tweets
-        2. Starts Telegram bot polling
-        3. Starts the tweet monitoring loop
+        2. Starts session health monitoring (T021-S2)
+        3. Starts Telegram bot polling
+        4. Starts the tweet monitoring loop
         """
         logger.info("Starting bot...")
         self._running = True
@@ -186,6 +395,13 @@ class ReplyGuyBot:
             name="background_worker"
         )
         logger.info("Background worker started")
+
+        # Start session health monitoring (T021-S2)
+        self._session_health_task = asyncio.create_task(
+            self._session_health_check_loop(),
+            name="session_health_monitor"
+        )
+        logger.info("Session health monitor started")
 
         # Start tweet monitoring
         self._monitor_task = asyncio.create_task(
@@ -218,11 +434,107 @@ class ReplyGuyBot:
             except asyncio.CancelledError:
                 pass
 
+        # Cancel session health task (T021)
+        if self._session_health_task and not self._session_health_task.done():
+            self._session_health_task.cancel()
+            try:
+                await self._session_health_task
+            except asyncio.CancelledError:
+                pass
+
         # Stop Telegram
         if self.telegram and self.telegram.app:
             await self.telegram.app.stop()
 
         logger.info("Bot stopped")
+
+    # =========================================================================
+    # Session Health Monitoring (T021)
+    # =========================================================================
+
+    async def _handle_session_alert(
+        self,
+        alert_type: str,
+        message: str,
+        details: dict,
+    ) -> None:
+        """
+        Handle session alerts from Ghost Delegate (T021-S4).
+
+        Args:
+            alert_type: Type of alert
+            message: Human-readable message
+            details: Additional details
+        """
+        logger.warning(f"Session alert: {alert_type} - {message}")
+
+        # Send alert via Telegram
+        if self.telegram:
+            await self.telegram.send_error_alert(
+                f"session_{alert_type}",
+                message,
+                details,
+            )
+
+        # Enable graceful degradation if session is problematic
+        if alert_type in ("session_expired", "session_refresh_failed", "auth_failed"):
+            self._session_degraded = True
+            logger.warning("Graceful degradation enabled due to session issues")
+
+    async def _session_health_check_loop(self, interval: int = 300) -> None:
+        """
+        Periodically check session health (T021-S2).
+
+        Args:
+            interval: Seconds between health checks (default: 5 min)
+        """
+        logger.info(f"Starting session health monitor (interval: {interval}s)")
+
+        while self._running:
+            try:
+                # Perform health check with auto-refresh (with db for cooldown tracking)
+                health = await self.ghost.check_session_health(auto_refresh=True, db=self.db)
+
+                if health == SessionHealth.HEALTHY:
+                    if self._session_degraded:
+                        logger.info("Session recovered - disabling graceful degradation")
+                        self._session_degraded = False
+
+                        # Notify user of recovery
+                        await self.telegram.app.bot.send_message(
+                            chat_id=self.telegram.chat_id,
+                            text="✅ *Session Recovered*\n\nTwitter session is healthy again.",
+                            parse_mode="Markdown",
+                        )
+
+                elif health == SessionHealth.DEGRADED:
+                    logger.warning("Session is degraded - monitoring closely")
+
+                elif health in (SessionHealth.EXPIRED, SessionHealth.FAILED):
+                    self._session_degraded = True
+                    logger.error(f"Session health critical: {health.value}")
+
+                # Log session status
+                status = self.ghost.get_session_status()
+                logger.debug(f"Session status: {status}")
+
+            except Exception as e:
+                logger.error(f"Error in session health check: {e}")
+
+            await asyncio.sleep(interval)
+
+    def is_operational(self) -> bool:
+        """
+        Check if bot is operational (T021-S5).
+
+        Returns:
+            True if bot can perform operations, False if in degraded mode.
+        """
+        if self._session_degraded:
+            return False
+        if self.ghost and not self.ghost.is_session_healthy():
+            return False
+        return True
 
     # =========================================================================
     # Tweet Monitoring
@@ -239,6 +551,17 @@ class ReplyGuyBot:
 
         while self._running:
             try:
+                # Check for graceful degradation (T021-S5)
+                if self._session_degraded:
+                    logger.warning("Skipping monitoring cycle - session degraded")
+                    await asyncio.sleep(check_interval)
+                    continue
+
+                if not self.is_operational():
+                    logger.warning("Skipping monitoring cycle - bot not operational")
+                    await asyncio.sleep(check_interval)
+                    continue
+
                 targets = await self.db.get_target_accounts()
 
                 if not targets:
@@ -248,6 +571,10 @@ class ReplyGuyBot:
 
                     for handle in targets:
                         if not self._running:
+                            break
+                        # Skip if session became degraded mid-cycle
+                        if self._session_degraded:
+                            logger.warning("Session degraded mid-cycle, stopping monitoring")
                             break
                         await self._check_account(handle)
                         # Rate limit protection - wait between accounts
@@ -300,12 +627,25 @@ class ReplyGuyBot:
             author: Twitter handle of the author
         """
         try:
-            # 1. Generate AI reply
+            # 1. Generate AI reply with circuit breaker protection
             logger.info(f"Generating reply for tweet {tweet.id}")
-            reply = await self.ai.generate_reply(
-                tweet_author=author,
-                tweet_content=tweet.text,
-            )
+
+            try:
+                reply = await self._circuit_breakers["ai"].call(
+                    self.ai.generate_reply,
+                    tweet_author=author,
+                    tweet_content=tweet.text,
+                )
+            except Exception as e:
+                logger.error(f"AI circuit breaker error: {e}")
+                # Send alert if circuit is open
+                if self._circuit_breakers["ai"].state.value == "open":
+                    await self.telegram.send_error_alert(
+                        "circuit_breaker_open",
+                        "AI service circuit breaker opened",
+                        {"service": "ai", "error": str(e)}
+                    )
+                return
 
             if not reply:
                 logger.warning(f"AI failed to generate reply for {tweet.id}")
@@ -331,6 +671,15 @@ class ReplyGuyBot:
 
         except Exception as e:
             logger.error(f"Error processing tweet {tweet.id}: {e}")
+            # Send error alert for critical failures
+            try:
+                await self.telegram.send_error_alert(
+                    "tweet_processing_failed",
+                    f"Failed to process tweet {tweet.id}",
+                    {"author": author, "error": str(e)}
+                )
+            except Exception:
+                pass
 
     # =========================================================================
     # Approval Callbacks

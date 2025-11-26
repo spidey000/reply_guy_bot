@@ -8,6 +8,9 @@
 # Testing
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+pytest-cov>=4.0.0
+pytest-timeout>=2.2.0
+freezegun>=1.4.0
 
 # Linting and formatting
 ruff>=0.3.0

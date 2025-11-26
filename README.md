@@ -5,8 +5,10 @@ Personal Twitter/X reply automation tool with security-first design.
 ## Features
 
 - **Ghost Delegate**: Secure credential protection using a dummy account for API operations
+- **Cookie Encryption**: Session cookies encrypted at rest with Fernet (AES-128-CBC)
 - **Burst Mode**: Anti-detection scheduling with randomized delays and quiet hours
-- **AI Replies**: OpenAI-compatible API (supports OpenAI, Ollama, LMStudio, Groq)
+- **Rate Limiting**: Sliding window rate limiter (15/hour, 50/day defaults)
+- **AI Replies**: OpenAI-compatible API (supports OpenRouter, Ollama, LMStudio)
 - **Telegram Approval**: Review and approve replies before posting
 - **Supabase Queue**: Persistent queue for scheduled tweets
 
@@ -15,14 +17,16 @@ Personal Twitter/X reply automation tool with security-first design.
 | Component | Status | Description |
 |-----------|--------|-------------|
 | Ghost Delegate | ✅ Done | Secure credential protection via dummy account |
+| Cookie Encryption | ✅ Done | Fernet (AES-128-CBC) encryption at rest |
 | Burst Mode | ✅ Done | Anti-detection scheduling (15-120 min delays, quiet hours) |
-| AI Client | ✅ Done | OpenAI-compatible (supports Ollama, LMStudio, Groq) |
+| Rate Limiting | ✅ Done | Sliding window (15/hour, 50/day) |
+| AI Client | ✅ Done | OpenAI-compatible (supports OpenRouter, Ollama, LMStudio) |
 | Database | ✅ Done | Supabase integration for queue persistence |
 | Telegram | ✅ Done | Approval workflow with inline buttons |
 | Background Worker | ✅ Done | Async publication loop |
-| **Main Orchestrator** | ✅ Done | Full integration (429 lines) |
+| **Main Orchestrator** | ✅ Done | Full integration with startup validation |
 
-**MVP Status:** Complete (10/20 tasks). See `TODO_TASKS.json` for detailed breakdown.
+**MVP Status:** Complete with security hardening. See `TODO_TASKS.json` for detailed breakdown.
 
 ## Architecture
 
@@ -75,6 +79,7 @@ See `.env.example` for all options:
 - **Telegram**: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 - **Supabase**: `SUPABASE_URL`, `SUPABASE_KEY`
 - **Burst Mode**: `BURST_MODE_ENABLED`, `QUIET_HOURS_START/END`, `MIN/MAX_DELAY_MINUTES`
+- **Security**: `COOKIE_ENCRYPTION_KEY` (generate with `Fernet.generate_key()`)
 
 ## Development
 
@@ -108,4 +113,7 @@ Once the bot is running, interact via Telegram:
 
 ## Documentation
 
-- [Technical Analysis](docs/ANALISIS_TECNICO.md) - Architecture decisions, implementation status, and Burst Mode specification
+| Document | Description |
+|----------|-------------|
+| [Product Specification](docs/PRODUCT_SPEC.md) | Complete product reference: file responsibilities, component interactions, feature specs, data model, configuration guide |
+| [Technical Analysis](docs/ANALISIS_TECNICO.md) | Deep-dive on Ghost Delegate security model, Burst Mode anti-detection algorithms, async architecture |

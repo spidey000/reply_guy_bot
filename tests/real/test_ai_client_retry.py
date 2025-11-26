@@ -6,8 +6,8 @@ This script shows how the retry mechanism works without requiring actual API cal
 
 import asyncio
 import logging
-from unittest.mock import AsyncMock, patch
-from openai import RateLimitError, APIConnectionError, APITimeoutError
+from unittest.mock import MagicMock, patch
+from requests.exceptions import ConnectionError, Timeout
 
 # Configure logging to see retry attempts
 logging.basicConfig(
@@ -16,6 +16,17 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+def create_mock_response(content: str):
+    """Create a mock requests response."""
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {
+        "choices": [{"message": {"content": content}}]
+    }
+    response.raise_for_status = MagicMock()
+    return response
 
 
 async def test_successful_after_retries():
@@ -31,27 +42,18 @@ async def test_successful_after_retries():
         model="test-model"
     )
 
-    # Create a mock response
-    mock_response = AsyncMock()
-    mock_response.choices = [AsyncMock()]
-    mock_response.choices[0].message.content = "This is a test reply!"
-
     # Mock the API call to fail twice, then succeed
     call_count = 0
-    async def mock_create(*args, **kwargs):
+    def mock_post(*args, **kwargs):
         nonlocal call_count
         call_count += 1
         if call_count < 3:
-            logger.warning(f"Attempt {call_count}: Raising RateLimitError")
-            raise RateLimitError(
-                "Rate limit exceeded",
-                response=None,
-                body=None
-            )
+            logger.warning(f"Attempt {call_count}: Raising ConnectionError")
+            raise ConnectionError("Connection failed")
         logger.warning(f"Attempt {call_count}: Success!")
-        return mock_response
+        return create_mock_response("This is a test reply!")
 
-    with patch.object(client.client.chat.completions, 'create', side_effect=mock_create):
+    with patch("requests.post", side_effect=mock_post):
         result = await client.generate_reply(
             tweet_author="test_user",
             tweet_content="This is a test tweet"
@@ -60,7 +62,7 @@ async def test_successful_after_retries():
         print(f"Result: {result}")
         print(f"Total attempts: {call_count}")
         assert result == "This is a test reply!"
-        print("✓ Test passed - retry logic worked!")
+        print("Test passed - retry logic worked!")
 
 
 async def test_exhausted_retries():
@@ -77,13 +79,13 @@ async def test_exhausted_retries():
 
     # Mock to always fail with connection error
     call_count = 0
-    async def mock_create(*args, **kwargs):
+    def mock_post(*args, **kwargs):
         nonlocal call_count
         call_count += 1
-        logger.warning(f"Attempt {call_count}: Raising APIConnectionError")
-        raise APIConnectionError("Connection failed")
+        logger.warning(f"Attempt {call_count}: Raising Timeout")
+        raise Timeout("Request timed out")
 
-    with patch.object(client.client.chat.completions, 'create', side_effect=mock_create):
+    with patch("requests.post", side_effect=mock_post):
         result = await client.generate_reply(
             tweet_author="test_user",
             tweet_content="This is a test tweet"
@@ -92,7 +94,7 @@ async def test_exhausted_retries():
         print(f"Result: {result}")
         print(f"Total attempts: {call_count}")
         assert result is None
-        print("✓ Test passed - gracefully returned None after all retries!")
+        print("Test passed - gracefully returned None after all retries!")
 
 
 async def test_immediate_success():
@@ -107,19 +109,14 @@ async def test_immediate_success():
         model="test-model"
     )
 
-    # Create a mock response
-    mock_response = AsyncMock()
-    mock_response.choices = [AsyncMock()]
-    mock_response.choices[0].message.content = "Immediate success!"
-
     call_count = 0
-    async def mock_create(*args, **kwargs):
+    def mock_post(*args, **kwargs):
         nonlocal call_count
         call_count += 1
         logger.warning(f"Attempt {call_count}: Success!")
-        return mock_response
+        return create_mock_response("Immediate success!")
 
-    with patch.object(client.client.chat.completions, 'create', side_effect=mock_create):
+    with patch("requests.post", side_effect=mock_post):
         result = await client.generate_reply(
             tweet_author="test_user",
             tweet_content="This is a test tweet"
@@ -129,7 +126,7 @@ async def test_immediate_success():
         print(f"Total attempts: {call_count}")
         assert result == "Immediate success!"
         assert call_count == 1
-        print("✓ Test passed - no retries needed!")
+        print("Test passed - no retries needed!")
 
 
 async def test_non_retryable_error():
@@ -145,13 +142,13 @@ async def test_non_retryable_error():
     )
 
     call_count = 0
-    async def mock_create(*args, **kwargs):
+    def mock_post(*args, **kwargs):
         nonlocal call_count
         call_count += 1
         logger.warning(f"Attempt {call_count}: Raising ValueError (non-retryable)")
         raise ValueError("Invalid parameter - this should not retry")
 
-    with patch.object(client.client.chat.completions, 'create', side_effect=mock_create):
+    with patch("requests.post", side_effect=mock_post):
         result = await client.generate_reply(
             tweet_author="test_user",
             tweet_content="This is a test tweet"
@@ -161,7 +158,7 @@ async def test_non_retryable_error():
         print(f"Total attempts: {call_count}")
         assert result is None
         assert call_count == 1  # Should fail immediately, no retries
-        print("✓ Test passed - non-retryable error failed immediately!")
+        print("Test passed - non-retryable error failed immediately!")
 
 
 async def main():
@@ -181,7 +178,7 @@ async def main():
         print("=" * 70)
 
     except Exception as e:
-        print(f"\n❌ Test failed: {e}")
+        print(f"\nTest failed: {e}")
         raise
 
 

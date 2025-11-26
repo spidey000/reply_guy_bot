@@ -29,7 +29,7 @@ wheels/
 venv/
 ENV/
 env/
-
+*env
 # === Environment Variables ===
 .env
 .env.local

@@ -17,12 +17,13 @@ services:
     volumes:
       # Persist Twikit cookies between restarts
       - ./cookies.json:/app/cookies.json:rw
-    # Optional: healthcheck
-    # healthcheck:
-    #   test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
+    # Healthcheck to detect container failures
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   # Optional: Redis for future rate limiting / caching
   # redis:

@@ -28,16 +28,22 @@ Configuration:
 import asyncio
 import logging
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from config import settings
+
+if TYPE_CHECKING:
+    from src.database import Database
+    from src.telegram_client import TelegramClient
+    from src.x_delegate import GhostDelegate
 
 logger = logging.getLogger(__name__)
 
 
 async def run_worker(
-    db,  # Database instance
-    ghost_delegate,  # GhostDelegate instance
-    telegram=None,  # Optional TelegramClient for notifications
+    db: "Database",
+    ghost_delegate: "GhostDelegate",
+    telegram: "TelegramClient | None" = None,
     check_interval: int | None = None,
 ) -> None:
     """
@@ -64,7 +70,11 @@ async def run_worker(
         await asyncio.sleep(interval)
 
 
-async def process_pending_tweets(db, ghost_delegate, telegram=None) -> int:
+async def process_pending_tweets(
+    db: "Database",
+    ghost_delegate: "GhostDelegate",
+    telegram: "TelegramClient | None" = None,
+) -> int:
     """
     Process all tweets ready for publication.
 
@@ -101,7 +111,11 @@ async def process_pending_tweets(db, ghost_delegate, telegram=None) -> int:
     return processed
 
 
-async def _publish_tweet(tweet: dict, ghost_delegate, db) -> bool:
+async def _publish_tweet(
+    tweet: dict,
+    ghost_delegate: "GhostDelegate",
+    db: "Database",
+) -> bool:
     """
     Publish a single tweet and update database.
 
@@ -124,18 +138,38 @@ async def _publish_tweet(tweet: dict, ghost_delegate, db) -> bool:
             await db.mark_as_posted(tweet_id)
             logger.info(f"Published tweet {tweet_id}")
         else:
-            await db.mark_as_failed(tweet_id, error="Publication failed")
-            logger.error(f"Failed to publish tweet {tweet_id}")
+            # Add to dead letter queue for retry (T017-S3)
+            error_msg = "Publication failed"
+            await db.mark_as_failed(tweet_id, error=error_msg)
+            await db.add_to_dead_letter_queue(
+                tweet_queue_id=tweet_id,
+                target_tweet_id=target_tweet_id,
+                error=error_msg,
+                retry_count=0,
+            )
+            logger.error(f"Failed to publish tweet {tweet_id}, added to DLQ")
 
         return success
 
     except Exception as e:
-        await db.mark_as_failed(tweet_id, error=str(e))
-        logger.error(f"Error publishing tweet {tweet_id}: {e}")
+        # Add to dead letter queue for retry (T017-S3)
+        error_msg = str(e)
+        await db.mark_as_failed(tweet_id, error=error_msg)
+        try:
+            await db.add_to_dead_letter_queue(
+                tweet_queue_id=tweet_id,
+                target_tweet_id=target_tweet_id,
+                error=error_msg,
+                retry_count=0,
+            )
+            logger.error(f"Error publishing tweet {tweet_id}, added to DLQ: {e}")
+        except Exception as dlq_error:
+            logger.error(f"Failed to add to DLQ: {dlq_error}")
+
         return False
 
 
-async def _notify_published(tweet: dict, telegram) -> None:
+async def _notify_published(tweet: dict, telegram: "TelegramClient") -> None:
     """Send notification that a tweet was published."""
     try:
         await telegram.send_published_notification(tweet)
@@ -143,7 +177,7 @@ async def _notify_published(tweet: dict, telegram) -> None:
         logger.error(f"Failed to send publish notification: {e}")
 
 
-async def get_queue_status(db) -> dict:
+async def get_queue_status(db: "Database") -> dict:
     """
     Get current queue status for monitoring.
 

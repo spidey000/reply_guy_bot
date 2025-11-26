@@ -256,6 +256,7 @@ If all else fails:
    ```bash
    rm cookies.json
    ```
+   > **Note:** Cookies are encrypted with Fernet. After deletion, new cookies will be encrypted automatically on next login if `COOKIE_ENCRYPTION_KEY` is set.
 
 3. **Reset circuit breakers** (via database or restart)
 
@@ -303,6 +304,36 @@ Set up alerts for:
 - Circuit breaker open for >5 minutes
 - Recovery success rate <80%
 - More than 3 database reconnections/hour
+
+## Startup Validation
+
+### Config Validation
+
+On startup, the bot validates all required configuration:
+- If any required settings are missing, the bot fails immediately with clear error message
+- Cookie encryption key format is validated if provided
+- Missing encryption key triggers a security warning (bot continues)
+
+### What You See
+
+```
+ERROR: Missing required configuration: DUMMY_USERNAME, TELEGRAM_BOT_TOKEN
+```
+
+or
+
+```
+WARNING: SECURITY WARNING: COOKIE_ENCRYPTION_KEY not set. Cookies will be stored in plaintext.
+```
+
+### Fix
+
+1. Check your `.env` file for missing values
+2. Generate encryption key if missing:
+   ```bash
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
+3. Restart bot
 
 ## Support
 

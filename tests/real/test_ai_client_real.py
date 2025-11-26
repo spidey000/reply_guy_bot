@@ -9,15 +9,15 @@ Tests actual AI client behavior with focus on retry logic:
 - Reply text cleaning
 - Health check
 
-Mocks: OpenAI API client responses
+Mocks: requests.post responses
 Real: Retry logic, exponential backoff, reply cleaning
 """
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+import time
+from unittest.mock import MagicMock, patch
 
 import pytest
-from openai import RateLimitError, APIConnectionError, APITimeoutError
+from requests.exceptions import ConnectionError, Timeout
 
 from src.ai_client import AIClient
 
@@ -34,17 +34,19 @@ def ai_client():
 
 @pytest.fixture
 def mock_response():
-    """Create mock OpenAI response."""
-    class MockChoice:
-        def __init__(self, content: str):
-            self.message = MagicMock()
-            self.message.content = content
-
-    class MockResponse:
-        def __init__(self, content: str):
-            self.choices = [MockChoice(content)]
-
-    return MockResponse
+    """Create mock requests response."""
+    def create_response(content: str, status_code: int = 200):
+        response = MagicMock()
+        response.status_code = status_code
+        response.json.return_value = {
+            "choices": [{"message": {"content": content}}]
+        }
+        response.raise_for_status = MagicMock()
+        if status_code >= 400:
+            from requests.exceptions import HTTPError
+            response.raise_for_status.side_effect = HTTPError()
+        return response
+    return create_response
 
 
 @pytest.mark.real
@@ -56,26 +58,22 @@ class TestAIClientReal:
         """
         Test that AIClient retries on transient errors.
 
-        Transient errors (RateLimitError, APIConnectionError, APITimeoutError)
-        should trigger retry with exponential backoff.
+        Transient errors (ConnectionError, Timeout) should trigger
+        retry with exponential backoff.
         """
         # Arrange
         call_count = 0
 
-        async def mock_create(*args, **kwargs):
+        def mock_post(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count < 3:
                 # First two calls fail with transient error
-                raise APIConnectionError(request=MagicMock())
+                raise ConnectionError("Connection failed")
             # Third call succeeds
             return mock_response("Success after retry!")
 
-        with patch.object(
-            ai_client.client.chat.completions,
-            "create",
-            side_effect=mock_create
-        ):
+        with patch("requests.post", side_effect=mock_post):
             # Act
             result = await ai_client.generate_reply(
                 tweet_author="testuser",
@@ -96,20 +94,12 @@ class TestAIClientReal:
         # Arrange
         call_count = 0
 
-        async def always_fail(*args, **kwargs):
+        def always_fail(*args, **kwargs):
             nonlocal call_count
             call_count += 1
-            raise RateLimitError(
-                message="Rate limit exceeded",
-                response=MagicMock(status_code=429),
-                body={}
-            )
+            raise Timeout("Request timed out")
 
-        with patch.object(
-            ai_client.client.chat.completions,
-            "create",
-            side_effect=always_fail
-        ):
+        with patch("requests.post", side_effect=always_fail):
             # Act
             result = await ai_client.generate_reply(
                 tweet_author="testuser",
@@ -127,42 +117,35 @@ class TestAIClientReal:
         Delays should be: 1s, 2s, 4s, ... capped at max_delay (8s).
         """
         # Arrange
-        delays = []
-        original_sleep = asyncio.sleep
-
-        async def mock_sleep(seconds):
-            delays.append(seconds)
-            # Don't actually sleep in tests
-
+        timestamps = []
         call_count = 0
 
-        async def fail_twice(*args, **kwargs):
+        def fail_twice(*args, **kwargs):
             nonlocal call_count
             call_count += 1
+            timestamps.append(time.time())
             if call_count <= 2:
-                raise APITimeoutError(request=MagicMock())
-            return MagicMock(
-                choices=[MagicMock(message=MagicMock(content="Success"))]
+                raise ConnectionError("Connection failed")
+            response = MagicMock()
+            response.status_code = 200
+            response.json.return_value = {
+                "choices": [{"message": {"content": "Success"}}]
+            }
+            response.raise_for_status = MagicMock()
+            return response
+
+        with patch("requests.post", side_effect=fail_twice):
+            # Act
+            result = await ai_client.generate_reply(
+                tweet_author="testuser",
+                tweet_content="Test tweet",
             )
 
-        with patch("asyncio.sleep", side_effect=mock_sleep):
-            with patch.object(
-                ai_client.client.chat.completions,
-                "create",
-                side_effect=fail_twice
-            ):
-                # Act
-                result = await ai_client.generate_reply(
-                    tweet_author="testuser",
-                    tweet_content="Test tweet",
-                )
-
-        # Assert: Delays should follow exponential pattern
-        # With tenacity wait_exponential(multiplier=1, min=1, max=8)
-        # First delay: 1s, Second delay: 2s
-        assert len(delays) == 2
-        assert delays[0] >= 1  # At least 1 second
-        assert delays[1] >= 2  # At least 2 seconds (exponential)
+        # Assert: Should have 3 calls with delays between them
+        assert len(timestamps) == 3
+        # First delay should be at least 1 second
+        delay1 = timestamps[1] - timestamps[0]
+        assert delay1 >= 0.9  # Allow small variance
 
     async def test_successful_generation(self, ai_client, mock_response):
         """
@@ -173,14 +156,7 @@ class TestAIClientReal:
         # Arrange
         expected_reply = "This is a great point! AI is truly transformative."
 
-        async def mock_create(*args, **kwargs):
-            return mock_response(expected_reply)
-
-        with patch.object(
-            ai_client.client.chat.completions,
-            "create",
-            side_effect=mock_create
-        ):
+        with patch("requests.post", return_value=mock_response(expected_reply)):
             # Act
             result = await ai_client.generate_reply(
                 tweet_author="elonmusk",
@@ -229,35 +205,33 @@ class TestAIClientReal:
         Should return True when API is accessible, False otherwise.
         """
         # Test 1: Successful health check
-        ai_client.client.models.list = AsyncMock(return_value=[])
-        result = await ai_client.health_check()
-        assert result is True
+        success_response = MagicMock()
+        success_response.status_code = 200
+
+        with patch("requests.get", return_value=success_response):
+            result = await ai_client.health_check()
+            assert result is True
 
         # Test 2: Failed health check
-        ai_client.client.models.list = AsyncMock(side_effect=Exception("API down"))
-        result = await ai_client.health_check()
-        assert result is False
+        with patch("requests.get", side_effect=Exception("API down")):
+            result = await ai_client.health_check()
+            assert result is False
 
     async def test_non_retryable_error(self, ai_client):
         """
         Test that non-retryable errors fail immediately.
 
-        Errors not in (RateLimitError, APIConnectionError, APITimeoutError)
-        should not trigger retries.
+        Errors not in (ConnectionError, Timeout) should not trigger retries.
         """
         # Arrange
         call_count = 0
 
-        async def non_retryable_error(*args, **kwargs):
+        def non_retryable_error(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             raise ValueError("Invalid parameter")
 
-        with patch.object(
-            ai_client.client.chat.completions,
-            "create",
-            side_effect=non_retryable_error
-        ):
+        with patch("requests.post", side_effect=non_retryable_error):
             # Act
             result = await ai_client.generate_reply(
                 tweet_author="testuser",

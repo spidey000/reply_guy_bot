@@ -6,6 +6,7 @@ This module handles all Telegram interactions including:
 - Processing approve/reject/edit callbacks
 - Queue management commands
 - Status notifications
+- Error alerts (T017-S7)
 
 Bot Commands:
     /start - Initialize bot
@@ -35,8 +36,10 @@ Configuration:
     TELEGRAM_CHAT_ID: Your personal/group chat ID
 """
 
+import json
 import logging
-from typing import Callable, Optional
+from datetime import datetime
+from typing import Any, Callable, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -180,6 +183,66 @@ class TelegramClient:
             text=message,
             parse_mode="Markdown",
         )
+
+    async def send_error_alert(
+        self,
+        error_type: str,
+        message: str,
+        details: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """
+        Send critical error alert to Telegram (T017-S7).
+
+        This is used for alerting on:
+        - Circuit breaker opened
+        - Multiple consecutive failures
+        - Rate limit exceeded
+        - Service degradation
+
+        Args:
+            error_type: Type of error (e.g., "circuit_breaker_open")
+            message: Human-readable error message
+            details: Optional dictionary with additional error details
+        """
+        try:
+            # Format timestamp
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Build alert message
+            alert_lines = [
+                "🚨 *CRITICAL ALERT*",
+                "",
+                f"*Type:* `{error_type}`",
+                f"*Time:* {timestamp}",
+                f"*Message:* {message}",
+            ]
+
+            # Add details if provided
+            if details:
+                alert_lines.append("")
+                alert_lines.append("*Details:*")
+                for key, value in details.items():
+                    # Format value safely
+                    if isinstance(value, (dict, list)):
+                        value_str = json.dumps(value, indent=2)
+                        alert_lines.append(f"```\n{key}: {value_str}\n```")
+                    else:
+                        alert_lines.append(f"  • {key}: `{value}`")
+
+            alert_text = "\n".join(alert_lines)
+
+            # Send alert
+            await self.app.bot.send_message(
+                chat_id=self.chat_id,
+                text=alert_text,
+                parse_mode="Markdown",
+            )
+
+            logger.info(f"Sent error alert: {error_type}")
+
+        except Exception as e:
+            # Log but don't raise - we don't want error alerts to cause cascading failures
+            logger.error(f"Failed to send error alert: {e}")
 
     # =========================================================================
     # Command Handlers

@@ -10,6 +10,8 @@
 -- Tables:
 --   - tweet_queue: Stores generated replies and their publication status
 --   - target_accounts: Twitter accounts to monitor for new tweets
+--   - login_history: Tracks login attempts for ban prevention (T022)
+--   - failed_tweets: Dead letter queue for failed posts (T017)
 
 -- ============================================================================
 -- TWEET QUEUE TABLE
@@ -129,6 +131,106 @@ CREATE TRIGGER update_target_accounts_updated_at
 --     USING (auth.role() = 'service_role');
 
 -- ============================================================================
+-- LOGIN HISTORY TABLE (Ban Prevention - T022)
+-- ============================================================================
+-- Tracks all login attempts to enforce cooldown between fresh logins.
+-- This prevents X/Twitter from banning the dummy account due to frequent
+-- re-authentication without using cookies.
+--
+-- Used by:
+--   - src/database.py: record_login_attempt(), get_last_successful_fresh_login(),
+--                      get_login_cooldown_remaining(), get_login_stats()
+--   - src/x_delegate.py: login_dummy() checks cooldown before fresh login
+--
+-- Configuration:
+--   - LOGIN_COOLDOWN_HOURS (default: 3) - Minimum hours between fresh logins
+--   - LOGIN_COOLDOWN_ENABLED (default: true) - Enable/disable cooldown check
+--
+-- Flow:
+--   1. If cookies exist and valid → Use them (no cooldown check needed)
+--   2. If cookies missing/invalid → Check last fresh login timestamp
+--   3. If last fresh login < LOGIN_COOLDOWN_HOURS ago → Wait until cooldown expires
+--   4. After fresh login → Save cookies and record attempt to this table
+
+CREATE TABLE IF NOT EXISTS login_history (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+
+    -- Account identifier
+    -- 'dummy' = Ghost delegate account (used for authentication)
+    -- 'main' = Main account (reserved for future use)
+    account_type TEXT NOT NULL CHECK (account_type IN ('dummy', 'main')),
+
+    -- Login method
+    -- 'fresh' = Credential-based login (username/email/password)
+    -- 'cookie_restore' = Session restored from cookies.json
+    login_type TEXT NOT NULL CHECK (login_type IN ('fresh', 'cookie_restore')),
+
+    -- Outcome
+    success BOOLEAN NOT NULL,
+
+    -- Error details (only populated on failure)
+    error_message TEXT,
+    error_type TEXT,
+
+    -- When the attempt occurred (timezone-aware)
+    attempted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+    -- Cookie state at time of attempt
+    cookies_existed BOOLEAN DEFAULT false,
+    cookies_valid BOOLEAN  -- NULL for fresh logins, true/false for cookie restores
+);
+
+-- Index for cooldown queries: Find last successful fresh login quickly
+-- This is the most common query pattern for cooldown enforcement
+CREATE INDEX IF NOT EXISTS idx_login_history_fresh_success
+    ON login_history(attempted_at DESC)
+    WHERE login_type = 'fresh' AND success = true;
+
+-- Index for failure analysis: Find recent failed logins
+CREATE INDEX IF NOT EXISTS idx_login_history_recent_failures
+    ON login_history(attempted_at DESC)
+    WHERE success = false;
+
+-- Index for account-specific queries
+CREATE INDEX IF NOT EXISTS idx_login_history_account_type
+    ON login_history(account_type, attempted_at DESC);
+
+-- ============================================================================
+-- FAILED TWEETS TABLE (Dead Letter Queue - T017)
+-- ============================================================================
+-- Stores tweets that failed to post for retry logic.
+-- Part of the Error Recovery & Resilience system.
+--
+-- Used by:
+--   - src/database.py: add_to_dead_letter_queue(), get_dead_letter_items(),
+--                      retry_dead_letter_item(), get_dead_letter_stats()
+--   - src/background_worker.py: Retries failed tweets from this queue
+
+CREATE TABLE IF NOT EXISTS failed_tweets (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+
+    -- Reference to original tweet in queue
+    tweet_queue_id UUID REFERENCES tweet_queue(id),
+    target_tweet_id TEXT NOT NULL,
+
+    -- Error tracking
+    error TEXT,
+    retry_count INT DEFAULT 0,
+
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    last_retry_at TIMESTAMP WITH TIME ZONE,
+
+    -- Status: 'pending', 'retrying', 'exhausted', 'retried_successfully'
+    status TEXT DEFAULT 'pending'
+);
+
+-- Index for finding items ready for retry (pending with retries remaining)
+CREATE INDEX IF NOT EXISTS idx_failed_tweets_pending
+    ON failed_tweets(created_at)
+    WHERE status = 'pending' AND retry_count < 5;
+
+-- ============================================================================
 -- SAMPLE DATA (Optional)
 -- ============================================================================
 -- Uncomment to add sample target accounts
@@ -147,3 +249,12 @@ CREATE TRIGGER update_target_accounts_updated_at
 -- SELECT * FROM target_accounts LIMIT 5;
 -- SELECT count(*) as pending_count FROM tweet_queue WHERE status = 'pending';
 -- SELECT count(*) as posted_today FROM tweet_queue WHERE posted_at >= CURRENT_DATE;
+
+-- Login history verification:
+-- SELECT * FROM login_history ORDER BY attempted_at DESC LIMIT 10;
+-- SELECT * FROM login_history WHERE login_type = 'fresh' AND success = true ORDER BY attempted_at DESC LIMIT 1;
+
+-- Failed tweets (DLQ) verification:
+-- SELECT * FROM failed_tweets WHERE status = 'pending' LIMIT 5;
+-- SELECT count(*) as pending_dlq FROM failed_tweets WHERE status = 'pending';
+-- SELECT count(*) as exhausted_dlq FROM failed_tweets WHERE status = 'exhausted';
