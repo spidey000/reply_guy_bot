@@ -1,0 +1,180 @@
+================================================================================
+AI RETRY LOGIC FLOW DIAGRAM - Task T007-S5
+================================================================================
+
+NORMAL SUCCESS FLOW:
+--------------------
+generate_reply()
+    |
+    +--> _generate_with_retry()
+            |
+            +--> OpenAI API Call [Attempt 1]
+                    |
+                    +--> SUCCESS
+                            |
+                            +--> Return response
+                                    |
+                                    +--> Clean & return reply text
+
+
+RETRY FLOW (Rate Limit / Connection / Timeout Error):
+-----------------------------------------------------
+generate_reply()
+    |
+    +--> _generate_with_retry()
+            |
+            +--> OpenAI API Call [Attempt 1]
+            |       |
+            |       +--> RateLimitError/APIConnectionError/APITimeoutError
+            |               |
+            |               +--> Log WARNING: "Retrying in 1.0 seconds"
+            |               |
+            |               +--> Wait 1 second
+            |
+            +--> OpenAI API Call [Attempt 2]
+            |       |
+            |       +--> RateLimitError/APIConnectionError/APITimeoutError
+            |               |
+            |               +--> Log WARNING: "Retrying in 2.0 seconds"
+            |               |
+            |               +--> Wait 2 seconds
+            |
+            +--> OpenAI API Call [Attempt 3]
+                    |
+                    +--> SUCCESS
+                            |
+                            +--> Return response
+                                    |
+                                    +--> Clean & return reply text
+
+
+EXHAUSTED RETRIES FLOW:
+-----------------------
+generate_reply()
+    |
+    +--> _generate_with_retry()
+            |
+            +--> OpenAI API Call [Attempt 1]
+            |       |
+            |       +--> RateLimitError (wait 1s)
+            |
+            +--> OpenAI API Call [Attempt 2]
+            |       |
+            |       +--> RateLimitError (wait 2s)
+            |
+            +--> OpenAI API Call [Attempt 3]
+            |       |
+            |       +--> RateLimitError
+            |               |
+            |               +--> Re-raise exception (no more attempts)
+            |
+            +--> Exception caught by generate_reply()
+                    |
+                    +--> Log ERROR: "Failed to generate reply after all retries"
+                    |
+                    +--> Return None (graceful degradation)
+
+
+NON-RETRYABLE ERROR FLOW:
+-------------------------
+generate_reply()
+    |
+    +--> _generate_with_retry()
+            |
+            +--> OpenAI API Call [Attempt 1]
+            |       |
+            |       +--> ValueError/AuthenticationError/Other
+            |               |
+            |               +--> NO RETRY (not in retry exception list)
+            |               |
+            |               +--> Re-raise immediately
+            |
+            +--> Exception caught by generate_reply()
+                    |
+                    +--> Log ERROR: "Failed to generate reply after all retries"
+                    |
+                    +--> Return None
+
+
+================================================================================
+CONFIGURATION SUMMARY
+================================================================================
+
+Retry Decorator Configuration:
+------------------------------
+- Max Attempts: 3
+- Backoff Strategy: Exponential (base 2)
+- Wait Times: 1s, 2s, 4s (min=1s, max=8s, multiplier=1)
+- Retryable Exceptions:
+    * openai.RateLimitError
+    * openai.APIConnectionError
+    * openai.APITimeoutError
+- Logging: WARNING level before each retry (via before_sleep_log)
+- Re-raise: True (exceptions propagate after exhausting retries)
+
+Graceful Degradation:
+--------------------
+- All exceptions caught by generate_reply()
+- Returns None on any failure (retryable or not)
+- Maintains backwards compatibility
+- No breaking changes to caller code
+
+
+================================================================================
+TIMING EXAMPLES
+================================================================================
+
+Example 1: Success on first try
+--------------------------------
+Time 0s:     [Attempt 1] --> Success
+Total time:  ~0-1s (API call time)
+
+Example 2: Success after 2 failures
+------------------------------------
+Time 0s:     [Attempt 1] --> RateLimitError
+Time 1s:     [Attempt 2] --> APIConnectionError
+Time 3s:     [Attempt 3] --> Success
+Total time:  ~3-4s (with retries)
+
+Example 3: All retries exhausted
+---------------------------------
+Time 0s:     [Attempt 1] --> APITimeoutError
+Time 1s:     [Attempt 2] --> APITimeoutError
+Time 3s:     [Attempt 3] --> APITimeoutError
+Total time:  ~3-4s (returns None)
+
+Example 4: Non-retryable error
+-------------------------------
+Time 0s:     [Attempt 1] --> ValueError
+Total time:  ~0-1s (returns None immediately)
+
+
+================================================================================
+LOGGING OUTPUT EXAMPLES
+================================================================================
+
+Success Case:
+-------------
+DEBUG - Attempting AI generation...
+DEBUG - Generated reply: This is a great tweet! I'd love to...
+
+Retry Case:
+-----------
+DEBUG - Attempting AI generation...
+WARNING - Retrying __main__.AIClient._generate_with_retry in 1.0 seconds as it raised RateLimitError: Rate limit exceeded.
+DEBUG - Attempting AI generation...
+WARNING - Retrying __main__.AIClient._generate_with_retry in 2.0 seconds as it raised APIConnectionError: Connection refused.
+DEBUG - Attempting AI generation...
+DEBUG - Generated reply: This is a great tweet! I'd love to...
+
+Failure Case:
+-------------
+DEBUG - Attempting AI generation...
+WARNING - Retrying __main__.AIClient._generate_with_retry in 1.0 seconds as it raised RateLimitError: Rate limit exceeded.
+DEBUG - Attempting AI generation...
+WARNING - Retrying __main__.AIClient._generate_with_retry in 2.0 seconds as it raised RateLimitError: Rate limit exceeded.
+DEBUG - Attempting AI generation...
+ERROR - Failed to generate reply after all retries: Rate limit exceeded
+
+
+================================================================================

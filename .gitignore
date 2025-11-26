@@ -66,10 +66,22 @@ docker-compose.override.yml
 cookies.json
 twikit_cookies.json
 *.cookies
+ghost_delegate_audit.log
 
 # === OS ===
 .DS_Store
 Thumbs.db
+nul
+
+# === Coverage Data ===
+coverage.db
+
+# === Claude/MCP Configuration (local only) ===
+.claude/
+.mcp.json
+
+# === Generated Planning Docs ===
+AGENT_EXECUTION_PLAN.json
 
 # === Documentation (private) ===
 docs/

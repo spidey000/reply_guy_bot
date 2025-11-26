@@ -39,5 +39,16 @@ tests/
 
 # === Development files ===
 *.log
+ghost_delegate_audit.log
+cookies.json
+*.cookies
 .env.example
 docker-compose.override.yml
+
+# === Coverage Data ===
+coverage.db
+nul
+
+# === Claude/MCP Configuration ===
+.claude/
+.mcp.json
