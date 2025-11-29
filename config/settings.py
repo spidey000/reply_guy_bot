@@ -38,8 +38,9 @@ class Settings(BaseSettings):
     # Get your API key from https://openrouter.ai/keys
     ai_api_key: str
     ai_base_url: str = "https://openrouter.ai/api/v1"
-    ai_model: str = "openai/gpt-4o-mini"
+    ai_model: str = "x-ai/grok-4.1-fast:free"
     # Model options (change ai_model above):
+    # "x-ai/grok-4.1-fast:free"    - Grok 4.1 Fast (free)
     # "openai/gpt-4o-mini"          - OpenAI GPT-4o Mini (cheap & fast)
     # "deepseek/deepseek-chat"      - DeepSeek V3 (very cheap)
     # "google/gemini-flash-1.5"     - Gemini Flash (fast)
@@ -87,10 +88,11 @@ class Settings(BaseSettings):
     login_cooldown_enabled: bool = True  # Enable/disable cooldown enforcement
 
     # =========================================================================
-    # Cookie Encryption (Security)
+    # Cookie Encryption (Security) - REQUIRED FOR PRODUCTION
     # =========================================================================
     # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-    cookie_encryption_key: str = ""  # Required for cookie encryption
+    # WARNING: This is MANDATORY in production to protect session cookies.
+    cookie_encryption_key: str  # Required - no default, must be set in .env
 
 
 # Singleton instance

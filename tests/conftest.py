@@ -13,6 +13,23 @@ Usage:
         pass
 """
 
+# =============================================================================
+# IMPORTANT: Set test environment variables BEFORE any imports that load settings
+# =============================================================================
+import os
+
+# Test Fernet key (valid format, for testing only)
+os.environ.setdefault("COOKIE_ENCRYPTION_KEY", "TUo5CmiYK5DJ7tMNT9gc-FGBBoLYkjlvQIXJjOWBmnc=")
+os.environ.setdefault("DUMMY_USERNAME", "test_dummy")
+os.environ.setdefault("DUMMY_EMAIL", "test@example.com")
+os.environ.setdefault("DUMMY_PASSWORD", "test_password")
+os.environ.setdefault("MAIN_ACCOUNT_HANDLE", "test_main")
+os.environ.setdefault("AI_API_KEY", "test-api-key")
+os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-token")
+os.environ.setdefault("TELEGRAM_CHAT_ID", "123456789")
+os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
+os.environ.setdefault("SUPABASE_KEY", "test-key")
+
 import asyncio
 import sqlite3
 from datetime import datetime, timedelta
@@ -90,6 +107,12 @@ def mock_settings():
     settings.max_posts_per_hour = 15
     settings.max_posts_per_day = 50
     settings.rate_limit_warning_threshold = 0.8
+
+    # Security settings (use test key for testing)
+    # This is a valid Fernet key generated for testing only
+    settings.cookie_encryption_key = "TUo5CmiYK5DJ7tMNT9gc-FGBBoLYkjlvQIXJjOWBmnc="
+    settings.login_cooldown_hours = 3
+    settings.login_cooldown_enabled = True
 
     return settings
 

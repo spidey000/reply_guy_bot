@@ -223,12 +223,17 @@ CREATE TABLE IF NOT EXISTS failed_tweets (
 
     -- Status: 'pending', 'retrying', 'exhausted', 'retried_successfully'
     status TEXT DEFAULT 'pending'
+        CHECK (status IN ('pending', 'retrying', 'exhausted', 'retried_successfully'))
 );
 
 -- Index for finding items ready for retry (pending with retries remaining)
 CREATE INDEX IF NOT EXISTS idx_failed_tweets_pending
     ON failed_tweets(created_at)
     WHERE status = 'pending' AND retry_count < 5;
+
+-- Index for looking up DLQ items by original queue entry
+CREATE INDEX IF NOT EXISTS idx_failed_tweets_queue_id
+    ON failed_tweets(tweet_queue_id);
 
 -- ============================================================================
 -- SAMPLE DATA (Optional)

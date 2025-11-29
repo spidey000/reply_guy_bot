@@ -1,23 +1,35 @@
 # =============================================================================
-# Reply Guy Bot - Production Dependencies
+# Reply Guy Bot - Production Dependencies (Pinned Versions)
 # =============================================================================
+# Generated: 2025-11-27
+# IMPORTANT: These versions are tested and verified for production.
+# Do not use >= constraints in production - use exact pins.
 
 # Twitter/X client
-twikit>=2.0.0
+twikit==2.1.0
 
-# AI client (OpenRouter via requests)
-requests>=2.31.0
-tenacity>=8.0.0
+# HTTP client (required by twikit, supabase)
+httpx==0.28.1
+requests==2.32.3
+
+# Retry logic
+tenacity==8.4.2
 
 # Telegram bot
-python-telegram-bot>=21.0
+python-telegram-bot==22.3
 
-# Database
-supabase>=2.0.0
+# Database (Supabase + dependencies)
+supabase==2.16.0
+gotrue==2.12.2
+postgrest==1.1.1
+realtime==2.5.2
+storage3==0.12.0
+supafunc==0.10.1
 
 # Configuration management
-pydantic-settings>=2.0.0
-python-dotenv>=1.0.0
+pydantic==2.11.7
+pydantic-settings==2.10.1
+python-dotenv==1.1.1
 
 # Security
-cryptography>=42.0.0
+cryptography==45.0.7

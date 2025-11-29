@@ -98,6 +98,9 @@ class TelegramClient:
         self.app.add_handler(CommandHandler("start", self._cmd_start))
         self.app.add_handler(CommandHandler("queue", self._cmd_queue))
         self.app.add_handler(CommandHandler("stats", self._cmd_stats))
+        self.app.add_handler(CommandHandler("add_target", self._cmd_add_target))
+        self.app.add_handler(CommandHandler("remove_target", self._cmd_remove_target))
+        self.app.add_handler(CommandHandler("list_targets", self._cmd_list_targets))
         self.app.add_handler(CallbackQueryHandler(self._handle_callback))
 
         logger.info("Telegram client initialized")
@@ -258,7 +261,10 @@ class TelegramClient:
             "👋 Reply Guy Bot initialized!\n\n"
             "Commands:\n"
             "/queue - View pending tweets\n"
-            "/stats - View statistics"
+            "/stats - View statistics\n"
+            "/list_targets - Show monitored accounts\n"
+            "/add_target @a, @b - Add accounts to monitor\n"
+            "/remove_target @a, @b - Stop monitoring accounts"
         )
 
     async def _cmd_queue(
@@ -337,6 +343,125 @@ class TelegramClient:
 
         except Exception as e:
             logger.error(f"Error fetching stats: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def _cmd_add_target(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Handle /add_target @handle1, @handle2 - add accounts to monitor."""
+        if not self._db:
+            await update.message.reply_text("❌ Database not connected")
+            return
+
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /add_target @handle1, @handle2, ..."
+            )
+            return
+
+        try:
+            # Join args and split by comma to support: /add_target @a, @b, @c
+            raw_input = " ".join(context.args)
+            handles = [
+                h.strip().lstrip("@").lower()
+                for h in raw_input.split(",")
+                if h.strip()
+            ]
+
+            added, reenabled, already_active = [], [], []
+            for handle in handles:
+                if handle and len(handle) >= 1:
+                    status = await self._db.add_target_account(handle)
+                    if status == "added":
+                        added.append(f"@{handle}")
+                    elif status == "re-enabled":
+                        reenabled.append(f"@{handle}")
+                    else:  # already_active
+                        already_active.append(f"@{handle}")
+
+            # Build response
+            lines = []
+            if added:
+                lines.append(f"✅ Added: {', '.join(added)}")
+            if reenabled:
+                lines.append(f"🔄 Re-enabled: {', '.join(reenabled)}")
+            if already_active:
+                lines.append(f"ℹ️ Already active: {', '.join(already_active)}")
+
+            if lines:
+                await update.message.reply_text("\n".join(lines))
+            else:
+                await update.message.reply_text("❌ No valid handles provided")
+
+        except Exception as e:
+            logger.error(f"Error adding target: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def _cmd_remove_target(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Handle /remove_target @handle1, @handle2 - stop monitoring accounts."""
+        if not self._db:
+            await update.message.reply_text("❌ Database not connected")
+            return
+
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /remove_target @handle1, @handle2, ..."
+            )
+            return
+
+        try:
+            # Join args and split by comma to support: /remove_target @a, @b, @c
+            raw_input = " ".join(context.args)
+            handles = [
+                h.strip().lstrip("@").lower()
+                for h in raw_input.split(",")
+                if h.strip()
+            ]
+
+            removed = []
+            for handle in handles:
+                if handle and len(handle) >= 1:
+                    await self._db.remove_target_account(handle)
+                    removed.append(f"@{handle}")
+
+            if removed:
+                await update.message.reply_text(f"✅ Removed: {', '.join(removed)}")
+            else:
+                await update.message.reply_text("❌ No valid handles provided")
+
+        except Exception as e:
+            logger.error(f"Error removing target: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def _cmd_list_targets(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Handle /list_targets - show monitored accounts."""
+        if not self._db:
+            await update.message.reply_text("❌ Database not connected")
+            return
+
+        try:
+            targets = await self._db.get_target_accounts()
+            if not targets:
+                await update.message.reply_text("No targets configured")
+                return
+
+            text = "📋 *Monitored accounts:*\n" + "\n".join(
+                f"  • @{h}" for h in targets
+            )
+            await update.message.reply_text(text, parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error listing targets: {e}")
             await update.message.reply_text(f"❌ Error: {e}")
 
     # =========================================================================

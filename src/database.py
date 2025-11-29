@@ -376,21 +376,42 @@ class Database:
 
         return [row["handle"] for row in result.data]
 
-    async def add_target_account(self, handle: str) -> None:
+    async def add_target_account(self, handle: str) -> str:
         """
         Add a new account to monitor.
 
         Args:
             handle: Twitter handle (without @).
+
+        Returns:
+            Status: 'added', 're-enabled', or 'already_active'
         """
         await self._ensure_connection()
+        handle = handle.lower().replace("@", "")
 
-        self.client.table("target_accounts").upsert({
-            "handle": handle.lower().replace("@", ""),
-            "enabled": True,
-        }).execute()
+        # Check if handle already exists
+        existing = self.client.table("target_accounts").select(
+            "enabled"
+        ).eq("handle", handle).execute()
 
-        logger.info(f"Added target account: @{handle}")
+        if existing.data:
+            if existing.data[0]["enabled"]:
+                return "already_active"
+            else:
+                # Re-enable disabled target
+                self.client.table("target_accounts").update({
+                    "enabled": True,
+                }).eq("handle", handle).execute()
+                logger.info(f"Re-enabled target account: @{handle}")
+                return "re-enabled"
+        else:
+            # Insert new target
+            self.client.table("target_accounts").insert({
+                "handle": handle,
+                "enabled": True,
+            }).execute()
+            logger.info(f"Added target account: @{handle}")
+            return "added"
 
     async def remove_target_account(self, handle: str) -> None:
         """

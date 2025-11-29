@@ -104,20 +104,13 @@ class ReplyGuyBot:
         if missing:
             raise ValueError(f"Missing required configuration: {', '.join(missing)}")
 
-        # Validate cookie encryption key if provided
-        if settings.cookie_encryption_key:
-            try:
-                Fernet(settings.cookie_encryption_key.encode())
-            except Exception as e:
-                raise ValueError(
-                    f"Invalid COOKIE_ENCRYPTION_KEY format: {e}. "
-                    "Generate a valid key with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
-                )
-        else:
-            logger.warning(
-                "SECURITY WARNING: COOKIE_ENCRYPTION_KEY not set. "
-                "Cookies will be stored in plaintext. "
-                "Generate a key with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+        # Validate cookie encryption key format (now required)
+        try:
+            Fernet(settings.cookie_encryption_key.encode())
+        except Exception as e:
+            raise ValueError(
+                f"Invalid COOKIE_ENCRYPTION_KEY format: {e}. "
+                "Generate a valid key with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
             )
 
         logger.info("Configuration validation passed")
