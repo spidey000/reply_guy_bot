@@ -112,6 +112,13 @@ CREATE TRIGGER update_target_accounts_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+-- Apply trigger to user_settings
+DROP TRIGGER IF EXISTS update_user_settings_updated_at ON user_settings;
+CREATE TRIGGER update_user_settings_updated_at
+    BEFORE UPDATE ON user_settings
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
 -- ============================================================================
 -- ROW LEVEL SECURITY (RLS) - Optional
 -- ============================================================================
@@ -236,6 +243,101 @@ CREATE INDEX IF NOT EXISTS idx_failed_tweets_queue_id
     ON failed_tweets(tweet_queue_id);
 
 -- ============================================================================
+-- USER SETTINGS TABLE (Settings Editor)
+-- ============================================================================
+-- Stores user-specific configuration overrides for the Telegram bot settings editor.
+-- Allows each Telegram user to have their own preferences while maintaining
+-- system defaults in the environment configuration.
+--
+-- Used by:
+--   - src/telegram_client.py: /settings command displays and manages user settings
+--   - src/database.py: get_user_settings(), update_user_settings(), reset_user_settings()
+--   - config/settings.py: Settings class loads user overrides on initialization
+--
+-- Flow:
+--   1. User opens /settings command → Show numbered menu of all available settings
+--   2. User selects setting number → Display current value and prompt for new value
+--   3. User enters new value → Validate and show confirmation dialog
+--   4. User confirms → Update settings_json and create audit trail entry
+--   5. Settings change applies to future operations (graceful transition)
+
+CREATE TABLE IF NOT EXISTS user_settings (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+
+    -- Telegram user identifier for settings association
+    telegram_user_id BIGINT NOT NULL,
+
+    -- JSON object containing all user setting overrides
+    -- Example: {"burst_mode_enabled": false, "quiet_hours_start": 1}
+    settings_json JSONB NOT NULL DEFAULT '{}',
+
+    -- Version tracking for settings migration and conflict resolution
+    settings_version INT DEFAULT 1,
+
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+    -- Ensure each user has only one settings record
+    CONSTRAINT unique_user_settings UNIQUE (telegram_user_id)
+);
+
+-- Index for fast user settings lookup (most common query)
+CREATE INDEX IF NOT EXISTS idx_user_settings_telegram_id
+    ON user_settings(telegram_user_id);
+
+-- ============================================================================
+-- SETTINGS HISTORY TABLE (Audit Trail)
+-- ============================================================================
+-- Complete audit trail of all settings changes made by users.
+-- Tracks who changed what, when, and provides rollback capability.
+-- Essential for debugging, security analysis, and change tracking.
+--
+-- Used by:
+--   - src/database.py: record_setting_change(), get_settings_history()
+--   - src/telegram_client.py: Settings editor shows change impact and history
+--   - config/settings.py: Settings class validates changes before applying
+--
+-- Security:
+--   - All changes attributed to specific Telegram user IDs
+--   - Complete before/after values stored for audit purposes
+--   - Change reasons help with debugging and compliance
+
+CREATE TABLE IF NOT EXISTS settings_history (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+
+    -- User who made the change
+    telegram_user_id BIGINT NOT NULL,
+
+    -- Setting that was changed
+    setting_key TEXT NOT NULL,
+
+    -- Previous value (can be NULL for new settings)
+    old_value JSONB,
+
+    -- New value that was applied
+    new_value JSONB NOT NULL,
+
+    -- Optional reason for the change (for audit and debugging)
+    change_reason TEXT,
+
+    -- When the change was made
+    changed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+    -- Verification status: 'applied', 'failed', 'rolled_back'
+    verification_status TEXT DEFAULT 'applied'
+        CHECK (verification_status IN ('applied', 'failed', 'rolled_back'))
+);
+
+-- Index for querying user's setting history (audit trail)
+CREATE INDEX IF NOT EXISTS idx_settings_history_user_setting
+    ON settings_history(telegram_user_id, setting_key, changed_at DESC);
+
+-- Index for finding recent changes across all users (admin use)
+CREATE INDEX IF NOT EXISTS idx_settings_history_recent
+    ON settings_history(changed_at DESC);
+
+-- ============================================================================
 -- SAMPLE DATA (Optional)
 -- ============================================================================
 -- Uncomment to add sample target accounts
@@ -263,3 +365,13 @@ CREATE INDEX IF NOT EXISTS idx_failed_tweets_queue_id
 -- SELECT * FROM failed_tweets WHERE status = 'pending' LIMIT 5;
 -- SELECT count(*) as pending_dlq FROM failed_tweets WHERE status = 'pending';
 -- SELECT count(*) as exhausted_dlq FROM failed_tweets WHERE status = 'exhausted';
+
+-- User settings verification:
+-- SELECT * FROM user_settings LIMIT 5;
+-- SELECT count(*) as users_with_settings FROM user_settings;
+-- SELECT settings_json FROM user_settings WHERE telegram_user_id = YOUR_USER_ID;
+
+-- Settings history verification:
+-- SELECT * FROM settings_history ORDER BY changed_at DESC LIMIT 10;
+-- SELECT count(*) as changes_today FROM settings_history WHERE changed_at >= CURRENT_DATE;
+-- SELECT * FROM settings_history WHERE telegram_user_id = YOUR_USER_ID ORDER BY changed_at DESC LIMIT 5;

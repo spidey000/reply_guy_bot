@@ -854,3 +854,265 @@ class Database:
                 "last_fresh_login": None,
                 "error": str(e),
             }
+
+    # =========================================================================
+    # User Settings Operations (Settings Editor)
+    # =========================================================================
+
+    async def get_user_settings(self, telegram_user_id: int) -> dict:
+        """
+        Get user-specific settings overrides from database.
+
+        Args:
+            telegram_user_id: Telegram user ID.
+
+        Returns:
+            Dictionary of setting overrides (empty if none exist).
+        """
+        try:
+            await self._ensure_connection()
+
+            result = self.client.table("user_settings").select(
+                "settings_json"
+            ).eq("telegram_user_id", telegram_user_id).execute()
+
+            if result.data:
+                return result.data[0]["settings_json"] or {}
+            return {}
+
+        except Exception as e:
+            logger.error(f"Failed to get user settings for {telegram_user_id}: {e}")
+            return {}
+
+    async def update_user_settings(
+        self,
+        telegram_user_id: int,
+        settings_overrides: dict,
+        change_reason: Optional[str] = None,
+    ) -> bool:
+        """
+        Update user-specific settings overrides.
+
+        Args:
+            telegram_user_id: Telegram user ID.
+            settings_overrides: Dictionary of setting key-value pairs.
+            change_reason: Optional reason for the change.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        try:
+            await self._ensure_connection()
+
+            # Get current settings for audit trail
+            current_overrides = await self.get_user_settings(telegram_user_id)
+
+            # Record changes in audit trail
+            for key, new_value in settings_overrides.items():
+                old_value = current_overrides.get(key)
+                await self._record_setting_change(
+                    telegram_user_id=telegram_user_id,
+                    setting_key=key,
+                    old_value=old_value,
+                    new_value=new_value,
+                    change_reason=change_reason
+                )
+
+            # Upsert user settings
+            result = self.client.table("user_settings").upsert({
+                "telegram_user_id": telegram_user_id,
+                "settings_json": settings_overrides,
+                "settings_version": 1,  # Could be incremented for migrations
+            }).execute()
+
+            logger.info(f"Updated user settings for {telegram_user_id}: {list(settings_overrides.keys())}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to update user settings for {telegram_user_id}: {e}")
+            return False
+
+    async def reset_user_settings(
+        self,
+        telegram_user_id: int,
+        change_reason: Optional[str] = None,
+    ) -> bool:
+        """
+        Reset all user-specific settings to defaults.
+
+        Args:
+            telegram_user_id: Telegram user ID.
+            change_reason: Optional reason for the reset.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        try:
+            await self._ensure_connection()
+
+            # Get current settings for audit trail
+            current_overrides = await self.get_user_settings(telegram_user_id)
+
+            # Record removal of all settings in audit trail
+            for key, old_value in current_overrides.items():
+                await self._record_setting_change(
+                    telegram_user_id=telegram_user_id,
+                    setting_key=key,
+                    old_value=old_value,
+                    new_value=None,  # Reset to default
+                    change_reason=change_reason or "Reset all settings"
+                )
+
+            # Delete user settings record
+            result = self.client.table("user_settings").delete().eq(
+                "telegram_user_id", telegram_user_id
+            ).execute()
+
+            logger.info(f"Reset user settings for {telegram_user_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to reset user settings for {telegram_user_id}: {e}")
+            return False
+
+    async def _record_setting_change(
+        self,
+        telegram_user_id: int,
+        setting_key: str,
+        old_value: Optional[Any],
+        new_value: Optional[Any],
+        change_reason: Optional[str] = None,
+    ) -> str:
+        """
+        Record a setting change in the audit trail.
+
+        Args:
+            telegram_user_id: Telegram user ID who made the change.
+            setting_key: The setting that was changed.
+            old_value: Previous value (None for new settings).
+            new_value: New value (None for reset to default).
+            change_reason: Optional reason for the change.
+
+        Returns:
+            ID of the audit trail entry.
+        """
+        try:
+            await self._ensure_connection()
+
+            result = self.client.table("settings_history").insert({
+                "telegram_user_id": telegram_user_id,
+                "setting_key": setting_key,
+                "old_value": old_value,
+                "new_value": new_value,
+                "change_reason": change_reason,
+                "verification_status": "applied",
+            }).execute()
+
+            audit_id = result.data[0]["id"]
+            logger.debug(f"Recorded setting change: {setting_key} -> {audit_id}")
+            return audit_id
+
+        except Exception as e:
+            logger.error(f"Failed to record setting change {setting_key}: {e}")
+            raise
+
+    async def get_settings_history(
+        self,
+        telegram_user_id: int,
+        setting_key: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """
+        Get settings change history for audit trail.
+
+        Args:
+            telegram_user_id: Telegram user ID.
+            setting_key: Optional specific setting to query.
+            limit: Maximum number of records to return.
+
+        Returns:
+            List of setting change dictionaries.
+        """
+        try:
+            await self._ensure_connection()
+
+            query = self.client.table("settings_history").select(
+                "*"
+            ).eq("telegram_user_id", telegram_user_id)
+
+            if setting_key:
+                query = query.eq("setting_key", setting_key)
+
+            result = query.order("changed_at", desc=True).limit(limit).execute()
+            return result.data
+
+        except Exception as e:
+            logger.error(f"Failed to get settings history for {telegram_user_id}: {e}")
+            return []
+
+    async def get_all_users_with_settings(self) -> list[dict]:
+        """
+        Get all users who have settings overrides.
+
+        Returns:
+            List of user dictionaries with their settings.
+        """
+        try:
+            await self._ensure_connection()
+
+            result = self.client.table("user_settings").select(
+                "telegram_user_id", "settings_json", "created_at", "updated_at"
+            ).execute()
+
+            return result.data
+
+        except Exception as e:
+            logger.error(f"Failed to get users with settings: {e}")
+            return []
+
+    async def get_settings_stats(self) -> dict:
+        """
+        Get statistics about settings usage across all users.
+
+        Returns:
+            Dictionary with settings statistics.
+        """
+        try:
+            await self._ensure_connection()
+
+            # Count users with settings
+            users_with_settings = self.client.table("user_settings").select(
+                "telegram_user_id", count="exact"
+            ).execute()
+
+            # Count total setting changes
+            total_changes = self.client.table("settings_history").select(
+                "id", count="exact"
+            ).execute()
+
+            # Count changes today
+            today = datetime.now().replace(hour=0, minute=0, second=0)
+            changes_today = self.client.table("settings_history").select(
+                "id", count="exact"
+            ).gte("changed_at", today.isoformat()).execute()
+
+            # Most popular settings (top 5)
+            popular_settings = self.client.table("settings_history").select(
+                "setting_key", count="exact"
+            ).eq("verification_status", "applied").execute()
+
+            return {
+                "users_with_settings": users_with_settings.count or 0,
+                "total_changes": total_changes.count or 0,
+                "changes_today": changes_today.count or 0,
+                "popular_settings": popular_settings.data[:5] if popular_settings.data else [],
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get settings stats: {e}")
+            return {
+                "users_with_settings": 0,
+                "total_changes": 0,
+                "changes_today": 0,
+                "popular_settings": [],
+            }
