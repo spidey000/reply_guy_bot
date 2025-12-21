@@ -6,6 +6,7 @@ Personal Twitter/X reply automation tool with security-first design.
 
 - **Multi-Source Discovery**: Discover tweets from target accounts, search queries, and home feed
 - **Topic Filtering**: AI-powered and keyword-based relevance scoring
+- **Gatekeeper Filter**: LLM-powered pre-filtering to evaluate tweet relevance before generating replies
 - **Ghost Delegate**: Secure credential protection using a dummy account for API operations
 - **CookieBot**: Multi-provider browser automation with 4 fallback strategies
 - **Cookie Encryption**: Session cookies encrypted at rest with Fernet (AES-128-CBC)
@@ -32,6 +33,7 @@ Personal Twitter/X reply automation tool with security-first design.
 | Background Worker | ✅ Done | Async publication loop |
 | Circuit Breakers | ✅ Done | Failure isolation for Twitter/AI/Database |
 | Session Health | ✅ Done | Proactive monitoring with auto-refresh |
+| **Gatekeeper Filter** | ✅ Done | LLM-powered tweet relevance pre-filtering |
 | **Main Orchestrator** | ✅ Done | Full integration with startup validation |
 
 ## Architecture
@@ -44,6 +46,15 @@ Personal Twitter/X reply automation tool with security-first design.
 │  • Main account password NEVER stored                       │
 │  • Dummy account handles risky operations                   │
 │  • Context switch only at publish time                      │
+└─────────────────────────────────────────────────────────────┘
+                           +
+┌─────────────────────────────────────────────────────────────┐
+│                  GATEKEEPER LAYER                           │
+│               (LLM-Powered Pre-Filter)                      │
+├─────────────────────────────────────────────────────────────┤
+│  • Evaluates tweet relevance before reply generation        │
+│  • Saves API costs by filtering irrelevant content          │
+│  • Configurable model, temperature, and score threshold     │
 └─────────────────────────────────────────────────────────────┘
                            +
 ┌─────────────────────────────────────────────────────────────┐
@@ -105,6 +116,14 @@ Opens a browser for you to login manually, then automatically extracts and saves
 ]
 ```
 
+### Option 3: Environment Variables (Docker)
+Set `X_AUTH_TOKEN` and `X_CT0` in your `.env` or Docker environment:
+```env
+X_AUTH_TOKEN=your_auth_token_value
+X_CT0=your_ct0_value
+```
+These take priority over `cookies.json` if set.
+
 ### CookieBot Providers
 The bot includes 4 browser automation providers with automatic fallback:
 
@@ -164,7 +183,24 @@ See `.env.example` for all options:
 | **Telegram** | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
 | **Database** | `SUPABASE_URL`, `SUPABASE_KEY` |
 | **Burst Mode** | `BURST_MODE_ENABLED`, `QUIET_HOURS_START/END`, `MIN/MAX_DELAY_MINUTES` |
+| **Gatekeeper Filter** | `FILTER_ENABLED`, `FILTER_TEMPERATURE`, `FILTER_MIN_SCORE` |
 | **Security** | `COOKIE_ENCRYPTION_KEY` (generate with `Fernet.generate_key()`) |
+
+### Gatekeeper Filter
+
+The Gatekeeper is an LLM-powered pre-filter that evaluates tweets before generating replies. This:
+- **Saves API costs** by skipping irrelevant tweets
+- **Improves quality** by filtering spam, toxicity, and low-effort content
+- **Is configurable** via Telegram settings (`/settings` → Gatekeeper Filter)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `filter_enabled` | `true` | Enable/disable the filter |
+| `filter_model` | `""` | AI model for filter (empty = use reply model) |
+| `filter_temperature` | `0.2` | AI temperature (low = consistent) |
+| `filter_min_score` | `5` | Minimum relevance score (1-10) |
+
+Prompts are configured in `config/prompts.py` (`GATEKEEPER_SYSTEM_PROMPT`).
 
 ## Development
 
@@ -183,7 +219,8 @@ src/
 ├── database_sqlite.py  # SQLite fallback
 ├── telegram_client.py  # Telegram approval flow
 ├── ai_client.py        # AI reply generation
-├── topic_filter.py     # Relevance scoring
+├── topic_filter.py     # Keyword-based relevance scoring
+├── tweet_filter.py     # Gatekeeper (LLM-powered pre-filter)
 ├── rate_limiter.py     # Rate limiting
 ├── circuit_breaker.py  # Failure isolation
 ├── scheduler.py        # Burst Mode scheduling

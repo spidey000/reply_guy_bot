@@ -32,15 +32,16 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        case_sensitive=False,  # Accept both UPPERCASE and lowercase env vars
     )
 
     # =========================================================================
     # X/Twitter Ghost Delegate
     # =========================================================================
     # Primary dummy account (numbered for future multi-account support)
-    dummy_username: str = Field(alias="DUMMY_USERNAME1")
-    dummy_email: str = Field(alias="DUMMY_EMAIL1")
-    dummy_password: str = Field(alias="DUMMY_PASSWORD1")
+    dummy_username1: str
+    dummy_email1: str
+    dummy_password1: str
     main_account_handle: str
 
     # =========================================================================
@@ -104,7 +105,14 @@ class Settings(BaseSettings):
     # =========================================================================
     # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     # WARNING: This is MANDATORY in production to protect session cookies.
-    cookie_encryption_key: str  # Required - no default, must be set in .env
+    cookie_encryption_key: str  # Required - no default
+
+    # =========================================================================
+    # Cookie Environment Variables (Optional - for Docker deployments)
+    # =========================================================================
+    # If set, cookies are loaded from env vars instead of cookies.json
+    x_auth_token: str = ""  # Twitter auth_token cookie
+    x_ct0: str = ""  # Twitter ct0 cookie
 
     # =========================================================================
     # Alert Configuration
@@ -112,6 +120,16 @@ class Settings(BaseSettings):
     # Minimum alert level to send to Telegram (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     # Lower levels will only be logged, not sent to Telegram
     min_telegram_alert_level: str = "DEBUG"  # Set to DEBUG for early-phase development
+
+    # =========================================================================
+    # Gatekeeper Filter (Tweet Relevance Analysis)
+    # =========================================================================
+    # The Gatekeeper uses an LLM to evaluate tweets before generating replies.
+    # This saves API costs by filtering out irrelevant or low-quality tweets.
+    filter_enabled: bool = True  # Enable/disable the Gatekeeper filter
+    filter_model: str = ""  # Model for filter (empty = use ai_model, or specify e.g. "google/gemini-2.0-flash-001")
+    filter_temperature: float = 0.2  # Low temperature for consistent decisions
+    filter_min_score: int = 5  # Minimum score (1-10) to consider a tweet "interesting"
 
     # =========================================================================
     # Runtime properties (not from environment)
@@ -357,6 +375,58 @@ class SettingValidator:
                 ('ERROR', '❌ ERROR - Errors and critical only'),
                 ('CRITICAL', '🚨 CRITICAL - Critical alerts only')
             ]
+        },
+
+        # Gatekeeper Filter
+        'filter_enabled': {
+            'type': bool,
+            'category': 'Gatekeeper Filter',
+            'description': 'Enable AI-powered tweet relevance filtering',
+            'default': True,
+            'guided_options': [
+                ('true', '✅ Enable Gatekeeper'),
+                ('false', '❌ Disable Gatekeeper')
+            ]
+        },
+        'filter_model': {
+            'type': str,
+            'category': 'Gatekeeper Filter',
+            'description': 'AI model for filter (empty = same as ai_model)',
+            'default': '',
+            'guided_options': [
+                ('', '🔗 Same as Reply Model'),
+                ('x-ai/grok-4.1-fast:free', 'Grok 4.1 Fast (Free)'),
+                ('openai/gpt-4o-mini', 'GPT-4o Mini (Fast)'),
+                ('deepseek/deepseek-chat', 'DeepSeek V3 (Cheap)'),
+                ('google/gemini-flash-1.5', 'Gemini Flash 1.5'),
+                ('google/gemini-2.0-flash-001', 'Gemini 2.0 Flash'),
+            ]
+        },
+        'filter_temperature': {
+            'type': float,
+            'min': 0.0,
+            'max': 1.0,
+            'category': 'Gatekeeper Filter',
+            'description': 'AI temperature for filter decisions (lower = more consistent)',
+            'default': 0.2,
+            'examples': ['0.0 (deterministic)', '0.2 (consistent)', '0.5 (balanced)', '1.0 (creative)'],
+            'guided_options': [
+                ('0.0', '0.0 - Deterministic'),
+                ('0.1', '0.1 - Very Consistent'),
+                ('0.2', '0.2 - Consistent (Recommended)'),
+                ('0.5', '0.5 - Balanced'),
+                ('1.0', '1.0 - Creative')
+            ]
+        },
+        'filter_min_score': {
+            'type': int,
+            'min': 1,
+            'max': 10,
+            'category': 'Gatekeeper Filter',
+            'description': 'Minimum relevance score (1-10) to process a tweet',
+            'default': 5,
+            'examples': ['3 (permissive)', '5 (balanced)', '7 (strict)', '9 (very strict)'],
+            'guided_options': [(str(i), f'{i}/10') for i in range(1, 11)]
         }
     }
 

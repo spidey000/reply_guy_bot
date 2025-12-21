@@ -41,6 +41,7 @@ from src.database import Database
 from src.scheduler import calculate_schedule_time, get_delay_description
 from src.telegram_client import TelegramClient
 from src.topic_filter import TopicFilter
+from src.tweet_filter import TweetFilterEngine, FilterDecision
 from src.tweet_sources import (
     TweetAggregator,
     TargetAccountSource,
@@ -98,6 +99,9 @@ class ReplyGuyBot:
         self._aggregator: Optional[TweetAggregator] = None
         self._topic_filter: Optional[TopicFilter] = None
 
+        # Gatekeeper filter (AI-powered relevance analysis)
+        self._filter_engine: Optional[TweetFilterEngine] = None
+
     def _validate_config(self) -> None:
         """
         Validate required configuration at startup.
@@ -107,9 +111,9 @@ class ReplyGuyBot:
         """
         # Required settings that must be present
         required_settings = [
-            ("DUMMY_USERNAME", settings.dummy_username),
-            ("DUMMY_EMAIL", settings.dummy_email),
-            ("DUMMY_PASSWORD", settings.dummy_password),
+            ("DUMMY_USERNAME", settings.dummy_username1),
+            ("DUMMY_EMAIL", settings.dummy_email1),
+            ("DUMMY_PASSWORD", settings.dummy_password1),
             ("MAIN_ACCOUNT_HANDLE", settings.main_account_handle),
             ("TELEGRAM_BOT_TOKEN", settings.telegram_bot_token),
             ("TELEGRAM_CHAT_ID", settings.telegram_chat_id),
@@ -219,13 +223,17 @@ class ReplyGuyBot:
             }
             logger.info("Circuit breakers initialized")
 
-            # 7. Pre-populate seen tweets from database to avoid duplicates
+            # 7. Initialize Gatekeeper filter
+            self._filter_engine = TweetFilterEngine()
+            logger.info(f"Gatekeeper filter initialized (enabled={settings.filter_enabled})")
+
+            # 8. Pre-populate seen tweets from database to avoid duplicates
             await self._load_seen_tweets()
 
-            # 8. Perform crash recovery (T017-S5)
+            # 9. Perform crash recovery (T017-S5)
             await self._perform_crash_recovery()
 
-            # 9. Initialize multi-source tweet discovery
+            # 10. Initialize multi-source tweet discovery
             await self._setup_sources()
 
             logger.info("All components initialized successfully")
@@ -822,7 +830,27 @@ class ReplyGuyBot:
             author: Twitter handle of the author
         """
         try:
-            # 1. Generate AI reply with circuit breaker protection
+            # 0. Check if already processed (DB check)
+            # This is critical to avoid duplicate AI calls and DB entries
+            if await self.db.check_target_tweet_exists(tweet.id):
+                logger.info(f"Skipping already processed tweet {tweet.id}")
+                return
+
+            # 1. Gatekeeper Filter (evaluate relevance before generating reply)
+            if self._filter_engine and self._filter_engine.enabled:
+                filter_result = await self._filter_engine.analyze_tweet(
+                    tweet_id=tweet.id,
+                    content=tweet.text,
+                    author=author,
+                )
+                if not self._filter_engine.is_interesting(filter_result):
+                    logger.info(
+                        f"Gatekeeper rejected tweet {tweet.id}: {filter_result.reason} "
+                        f"(score={filter_result.score})"
+                    )
+                    return  # Skip this tweet
+
+            # 2. Generate AI reply with circuit breaker protection
             logger.info(f"Generating reply for tweet {tweet.id}")
 
             try:

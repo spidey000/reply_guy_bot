@@ -56,7 +56,7 @@ class SQLiteDatabase:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS tweet_queue (
                 id TEXT PRIMARY KEY,
-                target_tweet_id TEXT NOT NULL,
+                target_tweet_id TEXT NOT NULL UNIQUE,
                 target_author TEXT NOT NULL,
                 target_content TEXT,
                 reply_text TEXT NOT NULL,
@@ -134,6 +134,14 @@ class SQLiteDatabase:
     # =========================================================================
     # Tweet Queue Operations
     # =========================================================================
+
+    async def check_target_tweet_exists(self, target_tweet_id: str) -> bool:
+        """Check if a tweet ID already exists in the queue."""
+        await self._ensure_connection()
+        
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM tweet_queue WHERE target_tweet_id = ?", (target_tweet_id,))
+        return cursor.fetchone()[0] > 0
     
     async def add_to_queue(
         self,
@@ -145,16 +153,32 @@ class SQLiteDatabase:
         """Add a new tweet to the queue."""
         await self._ensure_connection()
         
-        tweet_id = self._generate_uuid()
+        # Check existence first
         cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO tweet_queue (id, target_tweet_id, target_author, target_content, reply_text, status)
-            VALUES (?, ?, ?, ?, ?, 'pending')
-        """, (tweet_id, target_tweet_id, target_author, target_content, reply_text))
-        self.conn.commit()
+        cursor.execute("SELECT id FROM tweet_queue WHERE target_tweet_id = ?", (target_tweet_id,))
+        existing = cursor.fetchone()
         
-        logger.info(f"Added tweet to queue: {tweet_id}")
-        return tweet_id
+        if existing:
+            logger.warning(f"Tweet {target_tweet_id} already in queue ({existing[0]}), skipping add")
+            return existing[0]
+        
+        try:
+            tweet_id = self._generate_uuid()
+            cursor.execute("""
+                INSERT INTO tweet_queue (id, target_tweet_id, target_author, target_content, reply_text, status)
+                VALUES (?, ?, ?, ?, ?, 'pending')
+            """, (tweet_id, target_tweet_id, target_author, target_content, reply_text))
+            self.conn.commit()
+            
+            logger.info(f"Added tweet to queue: {tweet_id}")
+            return tweet_id
+        except sqlite3.IntegrityError:
+             # Handle race condition
+            cursor.execute("SELECT id FROM tweet_queue WHERE target_tweet_id = ?", (target_tweet_id,))
+            existing = cursor.fetchone()
+            if existing:
+                return existing[0]
+            raise
     
     async def approve_tweet(self, tweet_id: str, scheduled_at: datetime) -> None:
         """Approve a tweet and schedule it for posting."""

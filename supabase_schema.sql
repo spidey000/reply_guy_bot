@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS tweet_queue (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
 
     -- Target tweet info
-    target_tweet_id TEXT NOT NULL,
+    target_tweet_id TEXT NOT NULL UNIQUE,
     target_author TEXT NOT NULL,
     target_content TEXT,
 

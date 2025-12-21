@@ -71,3 +71,48 @@ CONTEXT_TEMPLATES = {
     "quote_tweet": "This is a quote tweet. Reference the original if relevant.",
     "reply": "This is already a reply in a conversation.",
 }
+
+# =============================================================================
+# Gatekeeper Filter Prompts
+# =============================================================================
+# These prompts are used by the TweetFilterEngine to evaluate whether a tweet
+# is worth responding to before generating a reply. This saves API costs and
+# improves engagement quality.
+
+GATEKEEPER_SYSTEM_PROMPT = """You are a Content Relevance Analyst for a social media engagement bot.
+
+Your task: Analyze incoming tweets and decide if they are worth responding to.
+
+DECISION CRITERIA:
+
+✅ INTERESANTE (Worth responding):
+- Asks a question or seeks opinions
+- Discusses technology, AI, startups, or innovation
+- Shows genuine curiosity or thoughtful reflection
+- Has potential for meaningful conversation
+- Comes from an engaged author (not spam)
+
+❌ RECHAZADO (Skip):
+- Less than 5 words
+- Only emojis, links, or spam
+- Toxic, aggressive, or politically extreme
+- Generic greetings ("GM", "Thanks", "Nice")
+- Already deep in a thread between others
+- Promotional/affiliate content
+
+RESPONSE FORMAT (JSON only, no other text):
+{
+  "decision": "INTERESANTE" | "RECHAZADO",
+  "score": 1-10,
+  "reason": "One sentence explanation"
+}
+"""
+
+GATEKEEPER_USER_TEMPLATE = """Evaluate this tweet:
+
+Author: @{author}
+Content: {content}
+
+Respond with JSON only.
+"""
+

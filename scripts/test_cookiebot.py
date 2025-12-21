@@ -27,11 +27,11 @@ async def main():
     print("==================================================")
     
     # Check if credentials exist
-    if not settings.dummy_username or not settings.dummy_password:
+    if not settings.dummy_username1 or not settings.dummy_password1:
         logger.error("Missing dummy credentials in .env")
         return
 
-    print(f"Target Account: {settings.dummy_username}")
+    print(f"Target Account: {settings.dummy_username1}")
     print(f"Encryption Key Configured: {bool(settings.cookie_encryption_key)}")
     
     bot = CookieBot()

@@ -55,7 +55,7 @@ async def verify_system():
         
         # Check settings
         print(f"  Cookie Encryption: {'ENABLED' if settings.cookie_encryption_key else 'DISABLED'}")
-        print(f"  Dummy Account: {settings.dummy_username}")
+        print(f"  Dummy Account: {settings.dummy_username1}")
         
     except Exception as e:
         print(f"❌ CookieBot initialization failed: {e}")

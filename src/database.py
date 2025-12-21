@@ -232,6 +232,26 @@ class Database:
     # Tweet Queue Operations
     # =========================================================================
 
+    async def check_target_tweet_exists(self, target_tweet_id: str) -> bool:
+        """
+        Check if a tweet ID already exists in the queue (any status).
+
+        Args:
+            target_tweet_id: Tweet ID to check.
+
+        Returns:
+            True if exists, False otherwise.
+        """
+        try:
+            await self._ensure_connection()
+            result = self.client.table("tweet_queue").select(
+                "id", count="exact"
+            ).eq("target_tweet_id", target_tweet_id).execute()
+            return (result.count or 0) > 0
+        except Exception as e:
+            logger.error(f"Failed to check tweet existence: {e}")
+            return False
+
     async def add_to_queue(
         self,
         target_tweet_id: str,
@@ -249,21 +269,44 @@ class Database:
             reply_text: Generated reply text.
 
         Returns:
-            ID of the created queue entry.
+            ID of the created (or existing) queue entry.
         """
         await self._ensure_connection()
 
-        result = self.client.table("tweet_queue").insert({
-            "target_tweet_id": target_tweet_id,
-            "target_author": target_author,
-            "target_content": target_content,
-            "reply_text": reply_text,
-            "status": "pending",
-        }).execute()
+        # Check existence first (optimization)
+        query = self.client.table("tweet_queue").select("id").eq(
+            "target_tweet_id", target_tweet_id
+        ).execute()
 
-        tweet_id = result.data[0]["id"]
-        logger.info(f"Added tweet to queue: {tweet_id}")
-        return tweet_id
+        if query.data:
+            existing_id = query.data[0]["id"]
+            logger.warning(
+                f"Tweet {target_tweet_id} already in queue ({existing_id}), skipping add"
+            )
+            return existing_id
+
+        try:
+            result = self.client.table("tweet_queue").insert({
+                "target_tweet_id": target_tweet_id,
+                "target_author": target_author,
+                "target_content": target_content,
+                "reply_text": reply_text,
+                "status": "pending",
+            }).execute()
+
+            tweet_id = result.data[0]["id"]
+            logger.info(f"Added tweet to queue: {tweet_id}")
+            return tweet_id
+        except Exception as e:
+            if "duplicate key" in str(e) or "unique constraint" in str(e):
+                logger.warning(f"Duplicate entry for tweet {target_tweet_id} caught on insert")
+                # Try to fetch it again
+                query = self.client.table("tweet_queue").select("id").eq(
+                    "target_tweet_id", target_tweet_id
+                ).execute()
+                if query.data:
+                    return query.data[0]["id"]
+            raise e
 
     async def approve_tweet(
         self,

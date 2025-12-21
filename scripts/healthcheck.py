@@ -33,7 +33,7 @@ def check_health() -> bool:
 
         # 2. Check required settings are configured
         required = [
-            settings.dummy_username,
+            settings.dummy_username1,
             settings.telegram_bot_token,
             settings.supabase_url,
             settings.ai_api_key,

@@ -27,8 +27,8 @@ async def test_login():
     print("🔐 X.COM LOGIN TEST")
     print("="*60)
     
-    print(f"\n📋 Account: {settings.dummy_username}")
-    print(f"📧 Email: {settings.dummy_email}")
+    print(f"\n📋 Account: {settings.dummy_username1}")
+    print(f"📧 Email: {settings.dummy_email1}")
     print(f"🔑 Password: {'*' * 8}")
     
     bot = CookieBot()

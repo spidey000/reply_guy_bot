@@ -66,13 +66,58 @@ class CookieBot:
             logger.error(f"Invalid encryption key: {e}")
             return None
 
+    def load_cookies_from_env(self) -> List[Dict[str, Any]]:
+        """
+        Load cookies from environment variables.
+        
+        Checks for X_AUTH_TOKEN and X_CT0 env vars.
+        
+        Returns:
+            List of cookie dicts, or empty list if env vars not set.
+        """
+        auth_token = settings.x_auth_token
+        ct0 = settings.x_ct0
+        
+        if auth_token and ct0:
+            logger.info("Loading cookies from environment variables")
+            return [
+                {
+                    "name": "auth_token",
+                    "value": auth_token,
+                    "domain": ".x.com",
+                    "path": "/",
+                    "secure": True,
+                    "httpOnly": True,
+                },
+                {
+                    "name": "ct0",
+                    "value": ct0,
+                    "domain": ".x.com",
+                    "path": "/",
+                    "secure": True,
+                    "httpOnly": False,
+                },
+            ]
+        
+        return []
+
     def load_cookies(self) -> List[Dict[str, Any]]:
         """
         Load cookies from storage.
         
+        Priority:
+        1. Environment variables (X_AUTH_TOKEN, X_CT0)
+        2. cookies.json file
+        
         Returns:
             List of cookie dicts, or empty list if missing/invalid.
         """
+        # 1. Try environment variables first
+        env_cookies = self.load_cookies_from_env()
+        if env_cookies:
+            return env_cookies
+        
+        # 2. Fall back to cookies.json
         if not self.cookie_file.exists():
             return []
 
@@ -172,9 +217,9 @@ class CookieBot:
                 
                 async with provider:
                     success = await provider.login_twitter(
-                        username=settings.dummy_username,
-                        password=settings.dummy_password,
-                        email=settings.dummy_email
+                        username=settings.dummy_username1,
+                        password=settings.dummy_password1,
+                        email=settings.dummy_email1
                     )
                     
                     if success:

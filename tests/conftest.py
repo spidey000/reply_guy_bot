@@ -75,9 +75,9 @@ def mock_settings():
     settings = MagicMock()
 
     # Ghost Delegate settings
-    settings.dummy_username = "test_dummy"
-    settings.dummy_email = "dummy@test.com"
-    settings.dummy_password = "test_password"
+    settings.dummy_username1 = "test_dummy"
+    settings.dummy_email1 = "dummy@test.com"
+    settings.dummy_password1 = "test_password"
     settings.main_account_handle = "test_main"
     settings.ghost_delegate_enabled = True
     settings.ghost_delegate_switch_timeout = 30

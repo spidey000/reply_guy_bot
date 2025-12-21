@@ -222,7 +222,7 @@ class GhostDelegate:
 
             # Verify session
             self.dummy_user = await self.client.get_user_by_screen_name(
-                settings.dummy_username
+                settings.dummy_username1
             )
             self.main_user = await self.client.get_user_by_screen_name(
                 settings.main_account_handle
@@ -234,10 +234,10 @@ class GhostDelegate:
             self._last_successful_operation = datetime.utcnow()
             self._consecutive_failures = 0
             
-            logger.info(f"Logged in as dummy: @{settings.dummy_username}")
+            logger.info(f"Logged in as dummy: @{settings.dummy_username1}")
             self._audit_log("login_success", {
                 "method": "cookie_bot",
-                "username": settings.dummy_username
+                "username": settings.dummy_username1
             })
             
             # Record successful login (simplified for now)
@@ -439,7 +439,7 @@ class GhostDelegate:
                 previous_account = self._current_account
                 self._current_account = "dummy"
 
-                logger.debug(f"Reverted to dummy: @{settings.dummy_username}")
+                logger.debug(f"Reverted to dummy: @{settings.dummy_username1}")
                 self._audit_log("account_revert", {
                     "from": previous_account,
                     "to": "dummy"
@@ -450,6 +450,64 @@ class GhostDelegate:
                 "error": str(e),
                 "critical": True
             })
+
+    async def validate_session(self) -> bool:
+        """
+        Validate that the current session is healthy and can be used for posting.
+
+        Returns:
+            True if session is valid and ready, False otherwise.
+        """
+        # Quick check: if not authenticated, session is invalid
+        if not self._is_authenticated or not self.client:
+            return False
+
+        # If session health is already known to be bad, return False
+        if self._session_health in (SessionHealth.EXPIRED, SessionHealth.FAILED):
+            return False
+
+        # If we've had a recent successful operation, trust the session
+        if self._last_successful_operation:
+            time_since_success = (datetime.utcnow() - self._last_successful_operation).total_seconds()
+            if time_since_success < 60:  # Within last minute
+                return True
+
+        # Otherwise, do a lightweight health check
+        return self.is_session_healthy()
+
+    @asynccontextmanager
+    async def as_main(self):
+        """
+        Context manager for temporarily switching to main account.
+
+        Usage:
+            async with ghost.as_main():
+                # Operations here run as main account
+                await tweet.reply("Hello!")
+            # Automatically reverts to dummy account
+        """
+        if not self._is_authenticated:
+            raise RuntimeError("Cannot switch to main: not authenticated")
+
+        if self._kill_switch:
+            raise RuntimeError("Cannot switch to main: kill switch active")
+
+        try:
+            # Switch to main account
+            self.client.set_delegate_account(settings.main_account_handle)
+            self._current_account = "main"
+            self._audit_log("account_switch", {
+                "from": "dummy",
+                "to": "main"
+            })
+            logger.debug(f"Switched to main: @{settings.main_account_handle}")
+            
+            yield
+            
+        finally:
+            # Always revert to dummy, even if an exception occurred
+            await self._revert_to_dummy()
+
 
     async def get_rate_limit_status(self) -> dict:
         """
@@ -634,7 +692,7 @@ class GhostDelegate:
 
         # Validate session by making a test request
         try:
-            test_user = await self.client.get_user_by_screen_name(settings.dummy_username)
+            test_user = await self.client.get_user_by_screen_name(settings.dummy_username1)
 
             if test_user is None:
                 self._session_health = SessionHealth.EXPIRED

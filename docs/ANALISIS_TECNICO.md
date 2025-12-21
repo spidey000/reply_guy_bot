@@ -8,10 +8,11 @@
 
 ## Overview
 
-Reply Guy Bot implements two core technical innovations for automated Twitter engagement:
+Reply Guy Bot implements three core technical innovations for automated Twitter engagement:
 
 1. **Ghost Delegate**: Security pattern protecting main account credentials through X's delegation API
 2. **Burst Mode**: Anti-detection system using humanized timing patterns
+3. **Gatekeeper Filter**: LLM-powered pre-filter for tweet relevance evaluation
 
 This document provides technical analysis of these systems and the overall architecture.
 
@@ -297,7 +298,120 @@ Sources are configurable at runtime via Telegram commands:
 | `topics` | Relevance filter keywords |
 | `source_settings` | Source configuration |
 
-## 3. Asynchronous Architecture
+---
+
+## 4. Gatekeeper Filter (LLM-Powered Pre-Filter)
+
+### Overview
+
+The Gatekeeper is an LLM-powered pre-filter that evaluates tweet relevance **before** generating replies. This saves API costs and improves engagement quality by filtering spam, toxicity, and irrelevant content early in the pipeline.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  GATEKEEPER FILTER FLOW                     │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│   Tweet Discovered                                          │
+│         │                                                   │
+│         ▼                                                   │
+│   ┌─────────────────┐                                       │
+│   │ Already in DB?  │──Yes──► Skip                          │
+│   └────────┬────────┘                                       │
+│            │No                                              │
+│            ▼                                                │
+│   ┌─────────────────┐                                       │
+│   │  GATEKEEPER     │ ◄── LLM evaluates relevance           │
+│   │  (TweetFilter)  │                                       │
+│   └────────┬────────┘                                       │
+│            │                                                │
+│      ┌─────┴─────┐                                          │
+│      │           │                                          │
+│  INTERESANTE  RECHAZADO                                     │
+│  (score ≥ 5)  (score < 5)                                   │
+│      │           │                                          │
+│      ▼           ▼                                          │
+│   Generate    Log & Skip                                    │
+│   AI Reply                                                  │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Decision Criteria
+
+The LLM evaluates tweets based on two categories:
+
+**✅ INTERESANTE (Worth responding):**
+- Asks a question or seeks opinions
+- Discusses relevant topics (tech, AI, startups)
+- Shows genuine curiosity or reflection
+- Has potential for meaningful conversation
+
+**❌ RECHAZADO (Skip):**
+- Less than 5 words
+- Only emojis, links, or spam
+- Toxic, aggressive, or politically extreme
+- Generic greetings ("GM", "Thanks", "Nice")
+- Promotional/affiliate content
+
+### Response Format
+
+The LLM returns a structured JSON response:
+
+```json
+{
+  "decision": "INTERESANTE" | "RECHAZADO",
+  "score": 1-10,
+  "reason": "One sentence explanation"
+}
+```
+
+### Configuration Parameters
+
+| Parameter | Default | Purpose |
+|-----------|---------|---------|
+| `FILTER_ENABLED` | `true` | Enable/disable the Gatekeeper |
+| `FILTER_MODEL` | `""` | Dedicated model (empty = use `AI_MODEL`) |
+| `FILTER_TEMPERATURE` | `0.2` | Low for consistent decisions |
+| `FILTER_MIN_SCORE` | `5` | Minimum score to pass (1-10) |
+
+### Granular Model Selection
+
+The Gatekeeper supports using a different AI model than reply generation:
+
+- **Use case**: Fast/cheap model for filtering, better model for replies
+- **Configuration**: Set `FILTER_MODEL` or leave empty to use `AI_MODEL`
+- **Telegram**: `/settings` → "Gatekeeper Filter" → "AI model"
+
+### Error Handling (Fail-Open)
+
+The Gatekeeper uses a fail-open pattern for resilience:
+
+| Error Type | Response |
+|------------|----------|
+| API error | Pass tweet (fail-open) |
+| Parse error | Pass tweet (fail-open) |
+| Timeout | Pass tweet (fail-open) |
+
+This ensures that temporary LLM issues don't block legitimate tweets.
+
+### Statistics
+
+The filter tracks metrics accessible via code:
+
+```python
+stats = filter_engine.get_stats()
+# {
+#   "total_analyzed": 100,
+#   "passed": 65,
+#   "rejected": 32,
+#   "errors": 3,
+#   "pass_rate": 0.65
+# }
+```
+
+---
+
+## 5. Asynchronous Architecture
 
 ### Event Loop Design
 
@@ -339,7 +453,7 @@ The bot uses Python's `asyncio` for concurrent operations:
 
 ---
 
-## 4. Integration Patterns
+## 6. Integration Patterns
 
 ### Twikit Integration
 
@@ -382,7 +496,7 @@ PostgreSQL database via Supabase client:
 
 ---
 
-## 5. Performance Considerations
+## 7. Performance Considerations
 
 ### Memory Footprint
 
@@ -407,7 +521,7 @@ PostgreSQL database via Supabase client:
 
 ---
 
-## 6. Security Features
+## 8. Security Features
 
 ### Implemented Security Measures
 
@@ -461,12 +575,13 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 ## Conclusion
 
-The Reply Guy Bot implements two complementary protection layers:
+The Reply Guy Bot implements three complementary protection layers:
 
 1. **Ghost Delegate**: Protects credentials through delegation
 2. **Burst Mode**: Protects account through behavioral mimicry
+3. **Gatekeeper Filter**: Saves costs and improves quality through pre-filtering
 
-The combination creates a system that is both secure (main account never at direct risk) and stealthy (posting patterns appear human-like).
+The combination creates a system that is secure (main account never at direct risk), stealthy (posting patterns appear human-like), and efficient (only relevant tweets processed).
 
 **Technical Achievements:**
 - Clean separation of concerns across modules
