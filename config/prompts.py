@@ -113,6 +113,11 @@ GATEKEEPER_USER_TEMPLATE = """Evaluate this tweet:
 Author: @{author}
 Content: {content}
 
-Respond with JSON only.
+RESPONSE FORMAT (JSON only, no other text):
+{
+  "decision": "INTERESANTE" | "RECHAZADO",
+  "score": 1-10,
+  "reason": "One sentence explanation"
+}
 """
 
