@@ -250,7 +250,7 @@ class PlaywrightProvider(BaseCookieProvider):
             # Step 1: Enter username
             logger.info("Entering username...")
             username_selector = "input[autocomplete='username']"
-            await self.page.wait_for_selector(username_selector, timeout=15000)
+            await self.page.wait_for_selector(username_selector, timeout=30000)
             await self._simulate_mouse_movement()
             await self._type_like_human(username_selector, username)
             await self._human_delay(500, 1500)

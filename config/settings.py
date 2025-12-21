@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     # "deepseek/deepseek-chat"      - DeepSeek V3 (very cheap)
     # "google/gemini-flash-1.5"     - Gemini Flash (fast)
     # "google/gemini-2.0-flash-001" - Gemini 2.0 Flash (latest)
+    ai_fallback_models: list[str] = []
 
     # =========================================================================
     # Telegram
@@ -104,6 +105,13 @@ class Settings(BaseSettings):
     # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     # WARNING: This is MANDATORY in production to protect session cookies.
     cookie_encryption_key: str  # Required - no default, must be set in .env
+
+    # =========================================================================
+    # Alert Configuration
+    # =========================================================================
+    # Minimum alert level to send to Telegram (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    # Lower levels will only be logged, not sent to Telegram
+    min_telegram_alert_level: str = "DEBUG"  # Set to DEBUG for early-phase development
 
     # =========================================================================
     # Runtime properties (not from environment)
@@ -333,6 +341,22 @@ class SettingValidator:
             'default': 3,
             'examples': ['1 (1 hour)', '6 (6 hours)', '24 (1 day)', '72 (3 days)', '168 (1 week)'],
             'guided_options': [(str(i), f'{i} hours') for i in [1, 2, 3, 6, 12, 24, 48, 72, 168]]
+        },
+
+        # Alert Configuration
+        'min_telegram_alert_level': {
+            'type': str,
+            'category': 'Alert Configuration',
+            'description': 'Minimum alert level to send to Telegram',
+            'default': 'DEBUG',
+            'choices': ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+            'guided_options': [
+                ('DEBUG', '🐛 DEBUG - All alerts'),
+                ('INFO', 'ℹ️ INFO - Informational and above'),
+                ('WARNING', '⚠️ WARNING - Warnings and above'),
+                ('ERROR', '❌ ERROR - Errors and critical only'),
+                ('CRITICAL', '🚨 CRITICAL - Critical alerts only')
+            ]
         }
     }
 

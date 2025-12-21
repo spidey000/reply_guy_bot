@@ -34,11 +34,19 @@ from cryptography.fernet import Fernet
 
 from config import settings
 from src.ai_client import AIClient
+from src.alerts import AlertManager, AlertLevel, initialize_alerts
 from src.background_worker import run_worker
 from src.circuit_breaker import CircuitBreaker
 from src.database import Database
 from src.scheduler import calculate_schedule_time, get_delay_description
 from src.telegram_client import TelegramClient
+from src.topic_filter import TopicFilter
+from src.tweet_sources import (
+    TweetAggregator,
+    TargetAccountSource,
+    SearchQuerySource,
+    HomeFeedSource,
+)
 from src.x_delegate import GhostDelegate, SessionHealth
 
 # Configure logging
@@ -46,6 +54,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+# Suppress noisy HTTP logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,11 +85,18 @@ class ReplyGuyBot:
         self._monitor_task: Optional[asyncio.Task] = None
         self._session_health_task: Optional[asyncio.Task] = None
 
+        # Alert manager for centralized notifications
+        self.alerts: Optional[AlertManager] = None
+
         # Session health monitoring (T021)
         self._session_degraded = False  # Graceful degradation flag
 
         # Circuit breakers for external services (T017-S1)
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
+
+        # Multi-source tweet discovery
+        self._aggregator: Optional[TweetAggregator] = None
+        self._topic_filter: Optional[TopicFilter] = None
 
     def _validate_config(self) -> None:
         """
@@ -146,6 +164,7 @@ class ReplyGuyBot:
                 base_url=settings.ai_base_url,
                 api_key=settings.ai_api_key,
                 model=settings.ai_model,
+                fallback_models=settings.ai_fallback_models,
             )
             logger.info(f"AI Client initialized (model: {settings.ai_model})")
 
@@ -160,7 +179,14 @@ class ReplyGuyBot:
             self.telegram.on_reject(self._handle_reject)
             logger.info("Approval callbacks wired")
 
-            # 5. Initialize Ghost Delegate
+            # 5. Initialize AlertManager
+            self.alerts = initialize_alerts(
+                telegram_client=self.telegram,
+                settings=settings,
+            )
+            logger.info("AlertManager initialized")
+
+            # 6. Initialize Ghost Delegate
             self.ghost = GhostDelegate()
 
             # Register session alert callback (T021-S4)
@@ -199,21 +225,21 @@ class ReplyGuyBot:
             # 8. Perform crash recovery (T017-S5)
             await self._perform_crash_recovery()
 
+            # 9. Initialize multi-source tweet discovery
+            await self._setup_sources()
+
             logger.info("All components initialized successfully")
             return True
 
         except Exception as e:
             logger.error(f"Failed to initialize components: {e}")
-            # Send error alert if telegram is initialized
-            if self.telegram:
-                try:
-                    await self.telegram.send_error_alert(
-                        "initialization_failed",
-                        "Bot initialization failed",
-                        {"error": str(e)}
-                    )
-                except Exception:
-                    pass
+            # Send error alert if alerts are initialized
+            if self.alerts:
+                await self.alerts.critical(
+                    "initialization_failed",
+                    "Bot initialization failed",
+                    error=str(e)
+                )
             return False
 
     async def _load_seen_tweets(self) -> None:
@@ -259,6 +285,65 @@ class ReplyGuyBot:
             logger.error(f"Crash recovery failed: {e}")
             # Don't fail startup if recovery fails
             pass
+
+    async def _setup_sources(self) -> None:
+        """
+        Initialize multi-source tweet discovery system.
+        
+        Loads configuration from database and sets up:
+        - Target account sources
+        - Search query sources
+        - Home feed source (if enabled)
+        - Topic filter for relevance scoring
+        """
+        try:
+            logger.info("Setting up tweet sources...")
+            
+            # Initialize aggregator
+            self._aggregator = TweetAggregator()
+            
+            # Load target accounts
+            targets = await self.db.get_target_accounts()
+            for handle in targets:
+                source = TargetAccountSource(handle)
+                self._aggregator.add_source(source)
+            
+            # Load search queries
+            searches = await self.db.get_search_queries()
+            for search in searches:
+                source = SearchQuerySource(
+                    query=search["query"],
+                    product=search.get("product", "Latest"),
+                )
+                self._aggregator.add_source(source)
+            
+            # Check if home feed is enabled
+            home_settings = await self.db.get_source_settings("home_feed_following")
+            if home_settings.get("enabled"):
+                source = HomeFeedSource(feed_type="following")
+                self._aggregator.add_source(source)
+            
+            # Initialize topic filter
+            topics = await self.db.get_topics()
+            self._topic_filter = TopicFilter(
+                topics=topics,
+                min_score=0.5,  # Default minimum relevance
+                use_ai=False,  # Keyword-based for now
+            )
+            
+            # Sync seen tweets with aggregator
+            self._aggregator.mark_seen_batch(list(self._seen_tweets))
+            
+            logger.info(
+                f"Sources initialized: {len(self._aggregator.get_enabled_sources())} sources, "
+                f"{len(topics)} topic filters"
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to setup sources: {e}")
+            # Initialize empty aggregator as fallback
+            self._aggregator = TweetAggregator()
+            self._topic_filter = TopicFilter()
 
     async def health_check(self) -> bool:
         """
@@ -418,15 +503,22 @@ class ReplyGuyBot:
         await self.telegram.app.start()
         await self.telegram.app.updater.start_polling(drop_pending_updates=True)
         logger.info("Telegram polling active")
+
+        # Send startup notification via AlertManager
+        await self.alerts.startup()
         
         # Keep running until stopped
         while self._running:
             await asyncio.sleep(1)
 
-    async def stop(self) -> None:
+    async def stop(self, reason: str = "Manual shutdown") -> None:
         """Gracefully stop the bot and all tasks."""
-        logger.info("Stopping bot...")
+        logger.info(f"Stopping bot (Reason: {reason})...")
         self._running = False
+
+        # Send stop notification via AlertManager
+        if self.alerts:
+            await self.alerts.shutdown(reason=reason)
 
         # Cancel background tasks
         if self._worker_task and not self._worker_task.done():
@@ -484,12 +576,12 @@ class ReplyGuyBot:
         """
         logger.warning(f"Session alert: {alert_type} - {message}")
 
-        # Send alert via Telegram
-        if self.telegram:
-            await self.telegram.send_error_alert(
+        # Send alert via AlertManager
+        if self.alerts:
+            await self.alerts.warning(
                 f"session_{alert_type}",
                 message,
-                details,
+                **details,
             )
 
         # Enable graceful degradation if session is problematic
@@ -558,7 +650,10 @@ class ReplyGuyBot:
 
     async def _monitor_tweets(self, check_interval: int = 300) -> None:
         """
-        Monitor target accounts for new tweets.
+        Monitor all tweet sources for new content.
+
+        Uses the TweetAggregator to fetch from multiple sources and
+        TopicFilter to filter by relevance.
 
         Args:
             check_interval: Seconds between monitoring cycles (default: 5 min)
@@ -578,29 +673,113 @@ class ReplyGuyBot:
                     await asyncio.sleep(check_interval)
                     continue
 
-                targets = await self.db.get_target_accounts()
+                # Refresh sources from database (in case config changed via Telegram)
+                await self._refresh_sources()
 
-                if not targets:
-                    logger.info("No target accounts configured")
+                if not self._aggregator or not self._aggregator.get_enabled_sources():
+                    logger.info("No tweet sources configured")
+                    await asyncio.sleep(check_interval)
+                    continue
+
+                # Fetch tweets from all sources
+                logger.info(f"Fetching from {len(self._aggregator.get_enabled_sources())} sources...")
+                tweets = await self._aggregator.fetch_all(
+                    client=self.ghost.client,
+                    count_per_source=10,
+                )
+
+                if not tweets:
+                    logger.debug("No new tweets found")
+                    await asyncio.sleep(check_interval)
+                    continue
+
+                # Apply topic filtering
+                if self._topic_filter and self._topic_filter.get_topics():
+                    filtered_results = await self._topic_filter.filter_tweets(tweets)
+                    logger.info(
+                        f"Topic filter: {len(filtered_results)}/{len(tweets)} tweets passed"
+                    )
                 else:
-                    logger.info(f"Monitoring {len(targets)} accounts...")
+                    # No topics = pass all tweets
+                    filtered_results = [(t, None) for t in tweets]
+                    logger.debug("No topic filters - processing all tweets")
 
-                    for handle in targets:
-                        if not self._running:
-                            break
-                        # Skip if session became degraded mid-cycle
-                        if self._session_degraded:
-                            logger.warning("Session degraded mid-cycle, stopping monitoring")
-                            break
-                        await self._check_account(handle)
-                        # Rate limit protection - wait between accounts
-                        await asyncio.sleep(2)
+                # Process filtered tweets
+                for tweet_data, score in filtered_results:
+                    if not self._running:
+                        break
+                    if self._session_degraded:
+                        logger.warning("Session degraded mid-cycle, stopping")
+                        break
+
+                    # Mark as seen in both places
+                    self._seen_tweets.add(tweet_data.id)
+                    self._aggregator.mark_seen(tweet_data.id)
+
+                    logger.info(
+                        f"New tweet from @{tweet_data.author_handle}: {tweet_data.id} "
+                        f"[source: {tweet_data.source_type.value}]"
+                    )
+
+                    # Process with existing workflow
+                    await self._process_new_tweet_data(tweet_data)
+
+                    # Rate limit protection
+                    await asyncio.sleep(2)
 
             except Exception as e:
                 logger.error(f"Error in monitor loop: {e}")
 
             # Wait before next cycle
             await asyncio.sleep(check_interval)
+
+    async def _refresh_sources(self) -> None:
+        """Refresh sources from database to pick up config changes."""
+        try:
+            # Clear and rebuild sources
+            self._aggregator = TweetAggregator()
+
+            # Load target accounts
+            targets = await self.db.get_target_accounts()
+            for handle in targets:
+                self._aggregator.add_source(TargetAccountSource(handle))
+
+            # Load search queries
+            searches = await self.db.get_search_queries()
+            for search in searches:
+                self._aggregator.add_source(SearchQuerySource(
+                    query=search["query"],
+                    product=search.get("product", "Latest"),
+                ))
+
+            # Home feed
+            home_settings = await self.db.get_source_settings("home_feed_following")
+            if home_settings.get("enabled"):
+                self._aggregator.add_source(HomeFeedSource(feed_type="following"))
+
+            # Reload topics
+            topics = await self.db.get_topics()
+            self._topic_filter = TopicFilter(topics=topics, min_score=0.5)
+
+            # Sync seen tweets
+            self._aggregator.mark_seen_batch(list(self._seen_tweets))
+
+        except Exception as e:
+            logger.warning(f"Failed to refresh sources: {e}")
+
+    async def _process_new_tweet_data(self, tweet_data) -> None:
+        """
+        Process a new tweet from aggregator.
+
+        Args:
+            tweet_data: TweetData object from aggregator
+        """
+        # Delegate to existing processing with raw tweet if available
+        if tweet_data.raw_tweet:
+            await self._process_new_tweet(tweet_data.raw_tweet, tweet_data.author_handle)
+        else:
+            # Fallback for when raw tweet is not available
+            logger.warning(f"No raw tweet for {tweet_data.id}, skipping")
 
     async def _check_account(self, handle: str) -> None:
         """
@@ -656,10 +835,11 @@ class ReplyGuyBot:
                 logger.error(f"AI circuit breaker error: {e}")
                 # Send alert if circuit is open
                 if self._circuit_breakers["ai"].state.value == "open":
-                    await self.telegram.send_error_alert(
+                    await self.alerts.error(
                         "circuit_breaker_open",
                         "AI service circuit breaker opened",
-                        {"service": "ai", "error": str(e)}
+                        service="ai",
+                        error=str(e)
                     )
                 return
 
@@ -688,14 +868,13 @@ class ReplyGuyBot:
         except Exception as e:
             logger.error(f"Error processing tweet {tweet.id}: {e}")
             # Send error alert for critical failures
-            try:
-                await self.telegram.send_error_alert(
+            if self.alerts:
+                await self.alerts.error(
                     "tweet_processing_failed",
                     f"Failed to process tweet {tweet.id}",
-                    {"author": author, "error": str(e)}
+                    author=author,
+                    error=str(e)
                 )
-            except Exception:
-                pass
 
     # =========================================================================
     # Approval Callbacks
@@ -767,7 +946,7 @@ async def main() -> None:
 
     def signal_handler():
         logger.info("Shutdown signal received")
-        asyncio.create_task(bot.stop())
+        asyncio.create_task(bot.stop("Signal received (SIGINT/SIGTERM)"))
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:

@@ -219,6 +219,84 @@ The combination of these strategies produces a human-like activity pattern:
 
 ---
 
+## 3. Multi-Source Tweet Discovery
+
+### Overview
+
+The bot discovers tweets from multiple sources, aggregates them, and applies topic-based filtering for relevance:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  TWEET DISCOVERY PIPELINE                   │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Sources:                                                   │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│  │   Target    │  │   Search    │  │    Home     │         │
+│  │  Accounts   │  │   Queries   │  │    Feed     │         │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘         │
+│         │                │                │                 │
+│         └────────────────┼────────────────┘                 │
+│                          ▼                                  │
+│              ┌─────────────────────┐                        │
+│              │    Aggregator       │                        │
+│              │  (Deduplication)    │                        │
+│              └──────────┬──────────┘                        │
+│                         ▼                                   │
+│              ┌─────────────────────┐                        │
+│              │   Topic Filter      │                        │
+│              │ (Relevance Scoring) │                        │
+│              └──────────┬──────────┘                        │
+│                         ▼                                   │
+│                   [AI Reply Generation]                     │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Source Types
+
+| Source | Twikit Method | Use Case |
+|--------|---------------|----------|
+| **Target Accounts** | `user.get_tweets()` | Monitor specific influencers |
+| **Search Queries** | `client.search_tweet()` | Discover by keyword (e.g., "AI startup") |
+| **Home Feed** | `client.get_latest_timeline()` | Find tweets from followed accounts |
+
+### Topic Filtering
+
+Tweets pass through a topic filter before AI processing:
+
+```python
+# Keyword-based scoring
+score = matched_keywords / total_keywords
+if score >= 0.5:  # Min threshold
+    process_tweet()
+```
+
+**Configuration via Telegram:**
+- `/add_topic machine learning` - Add relevance filter
+- `/list_topics` - Show active filters
+- No topics configured = all tweets processed
+
+### Source Management
+
+Sources are configurable at runtime via Telegram commands:
+
+| Action | Command |
+|--------|---------|
+| Add target | `/add_target @username` |
+| Add search | `/add_search <query>` |
+| Enable home feed | `/enable_home_feed` |
+| View status | `/sources` |
+
+### Database Tables
+
+| Table | Purpose |
+|-------|---------|
+| `target_accounts` | Accounts to monitor |
+| `search_queries` | Keyword searches |
+| `topics` | Relevance filter keywords |
+| `source_settings` | Source configuration |
+
 ## 3. Asynchronous Architecture
 
 ### Event Loop Design

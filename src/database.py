@@ -66,6 +66,32 @@ SQL Setup (run in Supabase SQL Editor):
         created_at TIMESTAMP DEFAULT NOW()
     );
 
+    -- Search queries table (for keyword-based discovery)
+    CREATE TABLE search_queries (
+        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        query TEXT NOT NULL UNIQUE,
+        product TEXT DEFAULT 'Latest',
+        enabled BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW()
+    );
+
+    -- Topics table (for relevance filtering)
+    CREATE TABLE topics (
+        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        keyword TEXT NOT NULL UNIQUE,
+        enabled BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW()
+    );
+
+    -- Source settings table (for home feed configuration)
+    CREATE TABLE source_settings (
+        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        source_type TEXT NOT NULL UNIQUE,
+        enabled BOOLEAN DEFAULT true,
+        config JSONB DEFAULT '{}',
+        created_at TIMESTAMP DEFAULT NOW()
+    );
+
     -- Failed tweets (Dead Letter Queue)
     CREATE TABLE failed_tweets (
         id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -157,8 +183,12 @@ class Database:
     def _connect(self) -> None:
         """Establish database connection."""
         try:
+            # Sanitize URL (strip trailing slashes)
+            url = self._url.rstrip("/")
+            
+            logger.info(f"Connecting to database at: {url}")
             self.client = create_client(
-                self._url,
+                url,
                 self._key,
             )
             self._is_connected = True
@@ -427,6 +457,227 @@ class Database:
         }).eq("handle", handle.lower().replace("@", "")).execute()
 
         logger.info(f"Removed target account: @{handle}")
+
+    # =========================================================================
+    # Search Queries Operations
+    # =========================================================================
+
+    async def get_search_queries(self) -> list[dict]:
+        """
+        Get all enabled search queries.
+
+        Returns:
+            List of search query dictionaries with 'query' and 'product' keys.
+        """
+        await self._ensure_connection()
+
+        result = self.client.table("search_queries").select(
+            "query", "product"
+        ).eq("enabled", True).execute()
+
+        return result.data
+
+    async def add_search_query(
+        self,
+        query: str,
+        product: str = "Latest",
+    ) -> str:
+        """
+        Add a new search query.
+
+        Args:
+            query: Search query string.
+            product: Type of search ("Top", "Latest", "Media").
+
+        Returns:
+            Status: 'added', 're-enabled', or 'already_active'
+        """
+        await self._ensure_connection()
+        query = query.strip()
+
+        # Check if query already exists
+        existing = self.client.table("search_queries").select(
+            "enabled"
+        ).eq("query", query).execute()
+
+        if existing.data:
+            if existing.data[0]["enabled"]:
+                return "already_active"
+            else:
+                # Re-enable disabled query
+                self.client.table("search_queries").update({
+                    "enabled": True,
+                    "product": product,
+                }).eq("query", query).execute()
+                logger.info(f"Re-enabled search query: {query}")
+                return "re-enabled"
+        else:
+            # Insert new query
+            self.client.table("search_queries").insert({
+                "query": query,
+                "product": product,
+                "enabled": True,
+            }).execute()
+            logger.info(f"Added search query: {query}")
+            return "added"
+
+    async def remove_search_query(self, query: str) -> None:
+        """
+        Remove a search query.
+
+        Args:
+            query: Search query string.
+        """
+        await self._ensure_connection()
+
+        self.client.table("search_queries").update({
+            "enabled": False,
+        }).eq("query", query.strip()).execute()
+
+        logger.info(f"Removed search query: {query}")
+
+    # =========================================================================
+    # Topics Operations
+    # =========================================================================
+
+    async def get_topics(self) -> list[str]:
+        """
+        Get all enabled topic keywords.
+
+        Returns:
+            List of keyword strings.
+        """
+        await self._ensure_connection()
+
+        result = self.client.table("topics").select(
+            "keyword"
+        ).eq("enabled", True).execute()
+
+        return [row["keyword"] for row in result.data]
+
+    async def add_topic(self, keyword: str) -> str:
+        """
+        Add a new topic keyword.
+
+        Args:
+            keyword: Topic keyword to add.
+
+        Returns:
+            Status: 'added', 're-enabled', or 'already_active'
+        """
+        await self._ensure_connection()
+        keyword = keyword.lower().strip()
+
+        # Check if keyword already exists
+        existing = self.client.table("topics").select(
+            "enabled"
+        ).eq("keyword", keyword).execute()
+
+        if existing.data:
+            if existing.data[0]["enabled"]:
+                return "already_active"
+            else:
+                # Re-enable disabled topic
+                self.client.table("topics").update({
+                    "enabled": True,
+                }).eq("keyword", keyword).execute()
+                logger.info(f"Re-enabled topic: {keyword}")
+                return "re-enabled"
+        else:
+            # Insert new topic
+            self.client.table("topics").insert({
+                "keyword": keyword,
+                "enabled": True,
+            }).execute()
+            logger.info(f"Added topic: {keyword}")
+            return "added"
+
+    async def remove_topic(self, keyword: str) -> None:
+        """
+        Remove a topic keyword.
+
+        Args:
+            keyword: Topic keyword to remove.
+        """
+        await self._ensure_connection()
+
+        self.client.table("topics").update({
+            "enabled": False,
+        }).eq("keyword", keyword.lower().strip()).execute()
+
+        logger.info(f"Removed topic: {keyword}")
+
+    # =========================================================================
+    # Source Settings Operations
+    # =========================================================================
+
+    async def get_source_settings(self, source_type: str) -> dict:
+        """
+        Get settings for a specific source type.
+
+        Args:
+            source_type: Source type identifier (e.g., 'home_feed_following')
+
+        Returns:
+            Settings dictionary with 'enabled' and 'config' keys.
+        """
+        await self._ensure_connection()
+
+        result = self.client.table("source_settings").select(
+            "enabled", "config"
+        ).eq("source_type", source_type).execute()
+
+        if result.data:
+            return result.data[0]
+        return {"enabled": False, "config": {}}
+
+    async def set_source_enabled(
+        self,
+        source_type: str,
+        enabled: bool,
+    ) -> None:
+        """
+        Enable or disable a source type.
+
+        Args:
+            source_type: Source type identifier.
+            enabled: Whether to enable the source.
+        """
+        await self._ensure_connection()
+
+        # Upsert the setting
+        existing = self.client.table("source_settings").select(
+            "id"
+        ).eq("source_type", source_type).execute()
+
+        if existing.data:
+            self.client.table("source_settings").update({
+                "enabled": enabled,
+            }).eq("source_type", source_type).execute()
+        else:
+            self.client.table("source_settings").insert({
+                "source_type": source_type,
+                "enabled": enabled,
+                "config": {},
+            }).execute()
+
+        status = "enabled" if enabled else "disabled"
+        logger.info(f"Source {source_type} {status}")
+
+    async def get_all_source_settings(self) -> list[dict]:
+        """
+        Get settings for all source types.
+
+        Returns:
+            List of source settings dictionaries.
+        """
+        await self._ensure_connection()
+
+        result = self.client.table("source_settings").select(
+            "source_type", "enabled", "config"
+        ).execute()
+
+        return result.data
 
     # =========================================================================
     # Dead Letter Queue Operations (T017-S3)

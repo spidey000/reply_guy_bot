@@ -43,6 +43,7 @@ from datetime import datetime
 from typing import Any, Callable, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -103,7 +104,20 @@ class TelegramClient:
         self.app.add_handler(CommandHandler("remove_target", self._cmd_remove_target))
         self.app.add_handler(CommandHandler("list_targets", self._cmd_list_targets))
         self.app.add_handler(CommandHandler("settings", self._cmd_settings))
+        # Search query commands
+        self.app.add_handler(CommandHandler("add_search", self._cmd_add_search))
+        self.app.add_handler(CommandHandler("remove_search", self._cmd_remove_search))
+        self.app.add_handler(CommandHandler("list_searches", self._cmd_list_searches))
+        # Topic commands
+        self.app.add_handler(CommandHandler("add_topic", self._cmd_add_topic))
+        self.app.add_handler(CommandHandler("remove_topic", self._cmd_remove_topic))
+        self.app.add_handler(CommandHandler("list_topics", self._cmd_list_topics))
+        # Source management
+        self.app.add_handler(CommandHandler("sources", self._cmd_sources))
+        self.app.add_handler(CommandHandler("enable_home_feed", self._cmd_enable_home_feed))
+        self.app.add_handler(CommandHandler("disable_home_feed", self._cmd_disable_home_feed))
         self.app.add_handler(CallbackQueryHandler(self._handle_callback))
+        self.app.add_error_handler(self._error_handler)
 
         logger.info("Telegram client initialized")
 
@@ -122,14 +136,24 @@ class TelegramClient:
         Returns:
             Message ID of the sent message.
         """
+        tweet_id = tweet_data.get("id", "")
         author = tweet_data.get("author", "unknown")
         content = tweet_data.get("content", "")
-        tweet_id = tweet_data.get("id", "")
+        
+        # Construct tweet URL
+        tweet_url = f"https://x.com/{author}/status/{tweet_id}"
 
         message = (
-            f"*New Tweet to Reply*\n\n"
-            f"*@{author}:*\n{content}\n\n"
-            f"*Suggested Reply:*\n{suggested_reply}"
+            f"*New Tweet to Reply*\n"
+            f"[Link to Tweet]({tweet_url})\n\n"
+            f"*@{author}:*\n"
+            f"```\n"
+            f"\n{content}\n"
+            f"```\n\n"
+            f"*Suggested Reply:*\n"
+            f"```\n"
+            f"\n{suggested_reply}\n"
+            f"```"
         )
 
         keyboard = InlineKeyboardMarkup([
@@ -145,6 +169,7 @@ class TelegramClient:
             text=message,
             reply_markup=keyboard,
             parse_mode="Markdown",
+            disable_web_page_preview=True,
         )
 
         logger.info(f"Sent approval request for tweet {tweet_id}")
@@ -188,6 +213,48 @@ class TelegramClient:
             text=message,
             parse_mode="Markdown",
         )
+
+    async def send_startup_notification(self) -> None:
+        """Send notification that the bot has started."""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        message = (
+            f"🚀 *Bot Started*\n\n"
+            f"*Time:* {timestamp}\n"
+            f"*Account:* @{settings.main_account_handle}\n"
+            f"*Mode:* {'Burst' if settings.burst_mode_enabled else 'Normal'}"
+        )
+        try:
+            await self.app.bot.send_message(
+                chat_id=self.chat_id,
+                text=message,
+                parse_mode="Markdown",
+            )
+            logger.info("Sent startup notification")
+        except Exception as e:
+            logger.error(f"Failed to send startup notification: {e}")
+
+    async def send_stop_notification(self, reason: str = "Manual shutdown") -> None:
+        """
+        Send notification that the bot has stopped.
+
+        Args:
+            reason: Reason for stopping.
+        """
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        message = (
+            f"🛑 *Bot Stopped*\n\n"
+            f"*Time:* {timestamp}\n"
+            f"*Reason:* {reason}"
+        )
+        try:
+            await self.app.bot.send_message(
+                chat_id=self.chat_id,
+                text=message,
+                parse_mode="Markdown",
+            )
+            logger.info("Sent stop notification")
+        except Exception as e:
+            logger.error(f"Failed to send stop notification: {e}")
 
     async def send_error_alert(
         self,
@@ -258,17 +325,90 @@ class TelegramClient:
         update: Update,
         context: ContextTypes.DEFAULT_TYPE,
     ) -> None:
-        """Handle /start command."""
-        await update.message.reply_text(
-            "👋 Reply Guy Bot initialized!\n\n"
-            "Commands:\n"
-            "/queue - View pending tweets\n"
-            "/stats - View statistics\n"
-            "/settings - ⚙️ Configure bot settings\n"
-            "/list_targets - Show monitored accounts\n"
-            "/add_target @a, @b - Add accounts to monitor\n"
-            "/remove_target @a, @b - Stop monitoring accounts"
-        )
+        """Handle /start command - show welcome message with all available commands."""
+        
+        # 1. Discover all registered commands
+        commands = []
+        handlers = self.app.handlers.get(0, [])
+        
+        for handler in handlers:
+            if isinstance(handler, CommandHandler):
+                for cmd in handler.commands:
+                    # Extract description from docstring
+                    doc = handler.callback.__doc__ or "No description"
+                    desc = doc.split("\n")[0]
+                    # Clean up standard docstring format "Handle /cmd - description"
+                    if " - " in desc:
+                        desc = desc.split(" - ", 1)[1]
+                    
+                    commands.append({"cmd": cmd, "desc": desc})
+
+        # 2. Categorize commands heuristically
+        categories = {
+            "📊 Status & Info": [],
+            "🎯 Target Accounts": [],
+            "🔍 Search Queries": [],
+            "🏷️ Topic Filters": [],
+            "🏠 Home Feed": [],
+            "🛠️ Other Commands": []
+        }
+
+        # Define priority order for Status category
+        status_priority = ["start", "queue", "stats", "settings", "sources"]
+
+        for cmd_data in commands:
+            cmd = cmd_data["cmd"]
+            
+            if cmd in status_priority:
+                categories["📊 Status & Info"].append(cmd_data)
+            elif "target" in cmd:
+                categories["🎯 Target Accounts"].append(cmd_data)
+            elif "search" in cmd:
+                categories["🔍 Search Queries"].append(cmd_data)
+            elif "topic" in cmd:
+                categories["🏷️ Topic Filters"].append(cmd_data)
+            elif "home_feed" in cmd:
+                categories["🏠 Home Feed"].append(cmd_data)
+            else:
+                categories["🛠️ Other Commands"].append(cmd_data)
+
+        # Sort commands within categories
+        for cat in categories:
+            if cat == "📊 Status & Info":
+                # Custom sort for status
+                categories[cat].sort(key=lambda x: status_priority.index(x["cmd"]) if x["cmd"] in status_priority else 99)
+            else:
+                categories[cat].sort(key=lambda x: x["cmd"])
+
+        # 3. Build help message
+        message = ["👋 *Reply Guy Bot*", "", "Automated Twitter reply assistant with multi-source tweet discovery.", ""]
+
+        for category_name, category_cmds in categories.items():
+            if not category_cmds:
+                continue
+
+            message.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            message.append(f"*{category_name}*")
+            message.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+            for item in category_cmds:
+                cmd = item["cmd"]
+                desc = item["desc"]
+                
+                # Add syntax hint based on command name
+                syntax = f"/{cmd}"
+                if cmd.startswith("add_") or cmd.startswith("remove_"):
+                    if "target" in cmd: syntax += " @user"
+                    elif "search" in cmd: syntax += " <query>"
+                    elif "topic" in cmd: syntax += " <keyword>"
+                
+                message.append(f"`{syntax}` — {desc}")
+            
+            message.append("")
+
+        message.append("💡 _Use /sources to see all active sources_")
+
+        await update.message.reply_text("\n".join(message), parse_mode="Markdown")
 
     async def _cmd_queue(
         self,
@@ -465,6 +605,270 @@ class TelegramClient:
 
         except Exception as e:
             logger.error(f"Error listing targets: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    # =========================================================================
+    # Search Query Commands
+    # =========================================================================
+
+    async def _cmd_add_search(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Handle /add_search <query> - add a search query."""
+        if not self._db:
+            await update.message.reply_text("❌ Database not connected")
+            return
+
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /add_search <query>\n"
+                "Example: /add_search AI startup"
+            )
+            return
+
+        try:
+            query = " ".join(context.args)
+            status = await self._db.add_search_query(query)
+
+            if status == "added":
+                await update.message.reply_text(f"✅ Added search query: `{query}`", parse_mode="Markdown")
+            elif status == "re-enabled":
+                await update.message.reply_text(f"🔄 Re-enabled search query: `{query}`", parse_mode="Markdown")
+            else:
+                await update.message.reply_text(f"ℹ️ Search query already active: `{query}`", parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error adding search query: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def _cmd_remove_search(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Handle /remove_search <query> - remove a search query."""
+        if not self._db:
+            await update.message.reply_text("❌ Database not connected")
+            return
+
+        if not context.args:
+            await update.message.reply_text("Usage: /remove_search <query>")
+            return
+
+        try:
+            query = " ".join(context.args)
+            await self._db.remove_search_query(query)
+            await update.message.reply_text(f"✅ Removed search query: `{query}`", parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error removing search query: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def _cmd_list_searches(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Handle /list_searches - list all active search queries."""
+        if not self._db:
+            await update.message.reply_text("❌ Database not connected")
+            return
+
+        try:
+            searches = await self._db.get_search_queries()
+            if not searches:
+                await update.message.reply_text("No search queries configured")
+                return
+
+            lines = ["🔍 *Active search queries:*"]
+            for s in searches:
+                lines.append(f"  • `{s['query']}` ({s['product']})")
+
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error listing searches: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    # =========================================================================
+    # Topic Commands
+    # =========================================================================
+
+    async def _cmd_add_topic(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Handle /add_topic <keyword> - add a topic filter."""
+        if not self._db:
+            await update.message.reply_text("❌ Database not connected")
+            return
+
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /add_topic <keyword>\n"
+                "Example: /add_topic machine learning"
+            )
+            return
+
+        try:
+            keyword = " ".join(context.args)
+            status = await self._db.add_topic(keyword)
+
+            if status == "added":
+                await update.message.reply_text(f"✅ Added topic: `{keyword}`", parse_mode="Markdown")
+            elif status == "re-enabled":
+                await update.message.reply_text(f"🔄 Re-enabled topic: `{keyword}`", parse_mode="Markdown")
+            else:
+                await update.message.reply_text(f"ℹ️ Topic already active: `{keyword}`", parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error adding topic: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def _cmd_remove_topic(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Handle /remove_topic <keyword> - remove a topic filter."""
+        if not self._db:
+            await update.message.reply_text("❌ Database not connected")
+            return
+
+        if not context.args:
+            await update.message.reply_text("Usage: /remove_topic <keyword>")
+            return
+
+        try:
+            keyword = " ".join(context.args)
+            await self._db.remove_topic(keyword)
+            await update.message.reply_text(f"✅ Removed topic: `{keyword}`", parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error removing topic: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def _cmd_list_topics(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Handle /list_topics - list all active topics."""
+        if not self._db:
+            await update.message.reply_text("❌ Database not connected")
+            return
+
+        try:
+            topics = await self._db.get_topics()
+            if not topics:
+                await update.message.reply_text(
+                    "No topic filters configured.\n"
+                    "All tweets will be processed."
+                )
+                return
+
+            lines = ["🏷️ *Active topic filters:*"]
+            for t in topics:
+                lines.append(f"  • `{t}`")
+
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error listing topics: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    # =========================================================================
+    # Source Management Commands
+    # =========================================================================
+
+    async def _cmd_sources(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Handle /sources - show all tweet sources and their status."""
+        if not self._db:
+            await update.message.reply_text("❌ Database not connected")
+            return
+
+        try:
+            lines = ["📡 *Tweet Sources Status*\n"]
+
+            # Target accounts
+            targets = await self._db.get_target_accounts()
+            lines.append(f"*Target Accounts:* {len(targets)} active")
+            if targets:
+                for t in targets[:5]:
+                    lines.append(f"  • @{t}")
+                if len(targets) > 5:
+                    lines.append(f"  _...and {len(targets) - 5} more_")
+
+            # Search queries
+            searches = await self._db.get_search_queries()
+            lines.append(f"\n*Search Queries:* {len(searches)} active")
+            if searches:
+                for s in searches[:5]:
+                    lines.append(f"  • `{s['query']}`")
+                if len(searches) > 5:
+                    lines.append(f"  _...and {len(searches) - 5} more_")
+
+            # Home feed
+            home_settings = await self._db.get_source_settings("home_feed_following")
+            home_status = "✅ Enabled" if home_settings.get("enabled") else "❌ Disabled"
+            lines.append(f"\n*Home Feed:* {home_status}")
+
+            # Topics
+            topics = await self._db.get_topics()
+            lines.append(f"\n*Topic Filters:* {len(topics)} active")
+            if not topics:
+                lines.append("  _No filters - all tweets processed_")
+
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error showing sources: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def _cmd_enable_home_feed(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Handle /enable_home_feed - enable home feed source."""
+        if not self._db:
+            await update.message.reply_text("❌ Database not connected")
+            return
+
+        try:
+            await self._db.set_source_enabled("home_feed_following", True)
+            await update.message.reply_text(
+                "✅ Home feed enabled!\n"
+                "The bot will now discover tweets from your timeline."
+            )
+
+        except Exception as e:
+            logger.error(f"Error enabling home feed: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def _cmd_disable_home_feed(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Handle /disable_home_feed - disable home feed source."""
+        if not self._db:
+            await update.message.reply_text("❌ Database not connected")
+            return
+
+        try:
+            await self._db.set_source_enabled("home_feed_following", False)
+            await update.message.reply_text("✅ Home feed disabled!")
+
+        except Exception as e:
+            logger.error(f"Error disabling home feed: {e}")
             await update.message.reply_text(f"❌ Error: {e}")
 
     async def _cmd_settings(
@@ -776,7 +1180,20 @@ class TelegramClient:
     ) -> None:
         """Handle inline keyboard callbacks."""
         query = update.callback_query
-        await query.answer()
+        
+        try:
+            await query.answer()
+        except BadRequest as e:
+            if "Query is too old" in str(e):
+                # Ignore this error to allow processing the action (e.g. approve/reject)
+                # even if the button is old
+                logger.warning(f"Callback query too old (ignored): {e}")
+            else:
+                # Log other bad request errors but don't crash
+                logger.error(f"Bad request in callback answer: {e}")
+        except Exception as e:
+            logger.error(f"Error answering callback query: {e}")
+
 
         action, *parts = query.data.split(":")
 
@@ -1136,3 +1553,11 @@ class TelegramClient:
         except Exception as e:
             logger.error(f"Error getting user settings display: {e}")
             return f"❌ Error: {e}"
+
+    async def _error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Log the error and send a telegram message to notify the developer."""
+        logger.error(
+            msg="Exception while handling an update:",
+            exc_info=context.error
+        )
+

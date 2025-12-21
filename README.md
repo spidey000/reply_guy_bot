@@ -4,6 +4,8 @@ Personal Twitter/X reply automation tool with security-first design.
 
 ## Features
 
+- **Multi-Source Discovery**: Discover tweets from target accounts, search queries, and home feed
+- **Topic Filtering**: AI-powered and keyword-based relevance scoring
 - **Ghost Delegate**: Secure credential protection using a dummy account for API operations
 - **CookieBot**: Multi-provider browser automation with 4 fallback strategies
 - **Cookie Encryption**: Session cookies encrypted at rest with Fernet (AES-128-CBC)
@@ -130,6 +132,9 @@ The bot supports dual database backends:
 Set `SUPABASE_URL` and `SUPABASE_KEY` in `.env`. Required tables:
 - `tweet_queue` - Pending and posted tweets
 - `target_accounts` - Accounts to monitor
+- `search_queries` - Keyword-based tweet discovery
+- `topics` - Relevance filter keywords
+- `source_settings` - Source configuration (e.g., home feed)
 - `failed_tweets` - Dead letter queue
 - `login_history` - Login tracking
 
@@ -155,7 +160,7 @@ See `.env.example` for all options:
 | Category | Variables |
 |----------|-----------|
 | **Ghost Delegate** | `DUMMY_USERNAME`, `DUMMY_EMAIL`, `DUMMY_PASSWORD`, `MAIN_ACCOUNT_HANDLE` |
-| **AI Provider** | `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` |
+| **AI Provider** | `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`, `AI_FALLBACK_MODELS` |
 | **Telegram** | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
 | **Database** | `SUPABASE_URL`, `SUPABASE_KEY` |
 | **Burst Mode** | `BURST_MODE_ENABLED`, `QUIET_HOURS_START/END`, `MIN/MAX_DELAY_MINUTES` |
@@ -178,43 +183,69 @@ src/
 ├── database_sqlite.py  # SQLite fallback
 ├── telegram_client.py  # Telegram approval flow
 ├── ai_client.py        # AI reply generation
+├── topic_filter.py     # Relevance scoring
 ├── rate_limiter.py     # Rate limiting
 ├── circuit_breaker.py  # Failure isolation
 ├── scheduler.py        # Burst Mode scheduling
 ├── background_worker.py # Async publication
+├── tweet_sources/      # Multi-source discovery
+│   ├── base.py         # TweetData + BaseTweetSource
+│   ├── aggregator.py   # Source aggregation
+│   ├── target_account.py
+│   ├── search_query.py
+│   └── home_feed.py
 └── cookiebot/          # Cookie extraction system
     ├── manager.py      # CookieBot orchestrator
     ├── base.py         # Provider base class
     └── providers/      # 4 automation providers
-        ├── nodriver/
-        ├── undetected/
-        ├── playwright/
-        └── drissionpage/
 ```
 
 ## Telegram Commands
 
+### Status & Info
 | Command | Description |
 |---------|-------------|
-| `/start` | Initialize bot and show available commands |
+| `/start` | Show help with all available commands |
 | `/queue` | View pending tweets awaiting approval |
-| `/stats` | View bot statistics (pending, posted today, Burst Mode config) |
-| `/settings` | Configure bot settings via inline menu |
+| `/stats` | View bot statistics |
+| `/settings` | Configure bot settings |
+| `/sources` | Show all tweet sources and their status |
+
+### Target Accounts
+| Command | Description |
+|---------|-------------|
 | `/add_target @user` | Add account to monitor |
 | `/remove_target @user` | Stop monitoring account |
 | `/list_targets` | Show all monitored accounts |
 
+### Search Queries
+| Command | Description |
+|---------|-------------|
+| `/add_search <query>` | Add keyword search (e.g., `/add_search AI startup`) |
+| `/remove_search <query>` | Remove a search query |
+| `/list_searches` | Show active search queries |
+
+### Topic Filters
+| Command | Description |
+|---------|-------------|
+| `/add_topic <keyword>` | Add relevance filter (e.g., `/add_topic machine learning`) |
+| `/remove_topic <keyword>` | Remove topic filter |
+| `/list_topics` | Show active topic filters |
+
+### Home Feed
+| Command | Description |
+|---------|-------------|
+| `/enable_home_feed` | Enable timeline discovery |
+| `/disable_home_feed` | Disable timeline discovery |
+
 ### Approval Workflow
 
-1. Bot detects new tweet from monitored accounts
-2. AI generates contextual reply
-3. Telegram sends message with:
-   - Original tweet preview
-   - AI-generated reply suggestion
-   - **[Approve]** **[Edit]** **[Reject]** buttons
-4. You approve/reject via Telegram
-5. Approved tweets scheduled with 15-120 min random delay (Burst Mode)
-6. Background worker publishes at scheduled time via Ghost Delegate
+1. Bot discovers tweets from multiple sources (targets, search, home feed)
+2. Topics filter for relevant content
+3. AI generates contextual reply
+4. Telegram sends approval request with **[Approve]** **[Edit]** **[Reject]**
+5. Approved tweets scheduled with random delay (Burst Mode)
+6. Background worker publishes via Ghost Delegate
 
 ## Scripts
 

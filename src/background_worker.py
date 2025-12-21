@@ -31,6 +31,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from config import settings
+from src.alerts import get_alerts
 
 if TYPE_CHECKING:
     from src.database import Database
@@ -101,7 +102,7 @@ async def process_pending_tweets(
     processed = 0
 
     for tweet in pending:
-        success = await _publish_tweet(tweet, ghost_delegate, db)
+        success = await _publish_tweet(tweet, ghost_delegate, db, telegram)
 
         if success:
             processed += 1
@@ -115,6 +116,7 @@ async def _publish_tweet(
     tweet: dict,
     ghost_delegate: "GhostDelegate",
     db: "Database",
+    telegram: "TelegramClient | None" = None,
 ) -> bool:
     """
     Publish a single tweet and update database.
@@ -149,6 +151,16 @@ async def _publish_tweet(
             )
             logger.error(f"Failed to publish tweet {tweet_id}, added to DLQ")
 
+            # Notify via AlertManager
+            alerts = get_alerts()
+            if alerts:
+                await alerts.error(
+                    "publication_failed",
+                    f"Failed to publish reply for tweet {target_tweet_id}",
+                    tweet_id=tweet_id,
+                    error=error_msg
+                )
+
         return success
 
     except Exception as e:
@@ -165,6 +177,16 @@ async def _publish_tweet(
             logger.error(f"Error publishing tweet {tweet_id}, added to DLQ: {e}")
         except Exception as dlq_error:
             logger.error(f"Failed to add to DLQ: {dlq_error}")
+
+        # Notify via AlertManager
+        alerts = get_alerts()
+        if alerts:
+            await alerts.critical(
+                "publication_error",
+                f"Critical error publishing reply for tweet {target_tweet_id}",
+                tweet_id=tweet_id,
+                error=error_msg
+            )
 
         return False
 
