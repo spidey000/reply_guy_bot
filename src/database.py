@@ -100,7 +100,7 @@ SQL Setup (run in Supabase SQL Editor):
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from supabase import create_client, Client
 from supabase.lib.client_options import ClientOptions

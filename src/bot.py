@@ -128,9 +128,18 @@ class ReplyGuyBot:
             # 0. Validate configuration first (fail fast)
             self._validate_config()
 
-            # 1. Initialize Database
-            self.db = Database()
-            logger.info("Database initialized")
+            # 1. Initialize Database (with SQLite fallback)
+            try:
+                self.db = Database()
+                # Test connection
+                if not await self.db.health_check():
+                    raise Exception("Supabase health check failed")
+                logger.info("Database initialized (Supabase)")
+            except Exception as e:
+                logger.warning(f"Supabase unavailable ({e}), falling back to SQLite")
+                from src.database_sqlite import SQLiteDatabase
+                self.db = SQLiteDatabase()
+                logger.info("Database initialized (SQLite fallback)")
 
             # 2. Initialize AI Client
             self.ai = AIClient(
@@ -403,9 +412,16 @@ class ReplyGuyBot:
         )
         logger.info("Tweet monitor started")
 
-        # Start Telegram polling (this blocks)
+        # Start Telegram polling (PTB v20+ compatible - manual start)
         logger.info("Starting Telegram polling...")
-        await self.telegram.app.run_polling(drop_pending_updates=True)
+        await self.telegram.app.initialize()
+        await self.telegram.app.start()
+        await self.telegram.app.updater.start_polling(drop_pending_updates=True)
+        logger.info("Telegram polling active")
+        
+        # Keep running until stopped
+        while self._running:
+            await asyncio.sleep(1)
 
     async def stop(self) -> None:
         """Gracefully stop the bot and all tasks."""
@@ -435,9 +451,16 @@ class ReplyGuyBot:
             except asyncio.CancelledError:
                 pass
 
-        # Stop Telegram
+        # Stop Telegram (PTB v20+ proper shutdown sequence)
         if self.telegram and self.telegram.app:
-            await self.telegram.app.stop()
+            try:
+                if self.telegram.app.updater and self.telegram.app.updater.running:
+                    await self.telegram.app.updater.stop()
+                if self.telegram.app.running:
+                    await self.telegram.app.stop()
+                    await self.telegram.app.shutdown()
+            except Exception as e:
+                logger.debug(f"Telegram stop error (ignored): {e}")
 
         logger.info("Bot stopped")
 

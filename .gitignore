@@ -58,6 +58,7 @@ coverage.xml
 # === Logs ===
 *.log
 logs/
+ghost_delegate_audit.log
 
 # === Docker ===
 docker-compose.override.yml
@@ -66,7 +67,14 @@ docker-compose.override.yml
 cookies.json
 twikit_cookies.json
 *.cookies
-ghost_delegate_audit.log
+
+# === Local Data & Assets ===
+browser_data/
+reply_bot.db
+*.db
+screenshots/
+*.png
+TODO_TASKS.json
 
 # === OS ===
 .DS_Store

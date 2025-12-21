@@ -62,13 +62,15 @@ from twikit.errors import (
 from config import settings
 from src.rate_limiter import RateLimiter, RateLimitExceeded
 
-logger = logging.getLogger(__name__)
+from src.cookiebot import CookieBot
 
-# Cookie file for session persistence
-COOKIE_FILE = Path("cookies.json")
+logger = logging.getLogger(__name__)
 
 # Audit log file for security tracking
 AUDIT_LOG_FILE = Path("ghost_delegate_audit.log")
+
+# Cookie file path (used by CookieBot)
+COOKIE_FILE = Path("cookies.json")
 
 
 class SessionHealth(Enum):
@@ -141,296 +143,6 @@ class GhostDelegate:
         except Exception as e:
             logger.error(f"Failed to write audit log: {e}")
 
-    def _get_fernet(self) -> Optional[Fernet]:
-        """
-        Get Fernet instance for cookie encryption/decryption.
-
-        Returns:
-            Fernet instance if encryption key is configured, None otherwise.
-        """
-        if not settings.cookie_encryption_key:
-            return None
-        try:
-            return Fernet(settings.cookie_encryption_key.encode())
-        except Exception as e:
-            logger.error(f"Invalid encryption key format: {e}")
-            return None
-
-    def _save_cookies_encrypted(self) -> bool:
-        """
-        Save cookies to file with encryption.
-
-        The method:
-        1. Saves cookies to a temp file (using Twikit's native method)
-        2. Reads the temp file
-        3. Encrypts the content
-        4. Writes encrypted content to the actual cookie file
-
-        Returns:
-            True if successful, False otherwise.
-        """
-        if not self.client:
-            return False
-
-        fernet = self._get_fernet()
-        if not fernet:
-            # Fallback to plaintext if no encryption key (with warning)
-            logger.warning("SECURITY WARNING: Saving cookies without encryption - set COOKIE_ENCRYPTION_KEY")
-            self.client.save_cookies(str(COOKIE_FILE))
-            return True
-
-        try:
-            # Save to temp file first
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tmp:
-                tmp_path = tmp.name
-
-            self.client.save_cookies(tmp_path)
-
-            # Read plaintext cookies
-            with open(tmp_path, 'r') as f:
-                plaintext = f.read()
-
-            # Encrypt and save to actual file
-            encrypted = fernet.encrypt(plaintext.encode())
-            with open(COOKIE_FILE, 'wb') as f:
-                f.write(encrypted)
-
-            # Clean up temp file
-            Path(tmp_path).unlink(missing_ok=True)
-
-            logger.debug("Saved encrypted cookies")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to save encrypted cookies: {e}")
-            # Clean up temp file on error
-            if 'tmp_path' in locals():
-                Path(tmp_path).unlink(missing_ok=True)
-            return False
-
-    def _load_cookies_encrypted(self) -> bool:
-        """
-        Load cookies from encrypted file.
-
-        The method:
-        1. Reads encrypted content from cookie file
-        2. Decrypts the content
-        3. Writes to a temp file
-        4. Loads into client using Twikit's native method
-
-        Returns:
-            True if successful, False otherwise.
-        """
-        if not self.client:
-            return False
-
-        if not COOKIE_FILE.exists():
-            return False
-
-        fernet = self._get_fernet()
-        if not fernet:
-            # Fallback to plaintext if no encryption key
-            logger.warning("SECURITY WARNING: Loading cookies without encryption - set COOKIE_ENCRYPTION_KEY")
-            self.client.load_cookies(str(COOKIE_FILE))
-            return True
-
-        try:
-            # Read encrypted cookies
-            with open(COOKIE_FILE, 'rb') as f:
-                encrypted = f.read()
-
-            # Try to decrypt
-            try:
-                plaintext = fernet.decrypt(encrypted).decode()
-            except InvalidToken:
-                # File might be plaintext (migration case)
-                logger.info("Cookie file appears to be plaintext, attempting migration...")
-                with open(COOKIE_FILE, 'r') as f:
-                    plaintext = f.read()
-                # Validate it's valid JSON
-                json.loads(plaintext)
-                logger.info("Plaintext cookies loaded, will be encrypted on next save")
-
-            # Write to temp file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tmp:
-                tmp.write(plaintext)
-                tmp_path = tmp.name
-
-            # Load into client
-            self.client.load_cookies(tmp_path)
-
-            # Clean up temp file
-            Path(tmp_path).unlink(missing_ok=True)
-
-            logger.debug("Loaded encrypted cookies")
-            return True
-
-        except json.JSONDecodeError:
-            logger.error("Cookie file is corrupted - not valid JSON")
-            return False
-        except Exception as e:
-            logger.error(f"Failed to load encrypted cookies: {e}")
-            # Clean up temp file on error
-            if 'tmp_path' in locals():
-                Path(tmp_path).unlink(missing_ok=True)
-            return False
-
-    async def validate_session(self) -> bool:
-        """
-        Check if current session is still valid.
-
-        Returns:
-            True if session is valid and authenticated, False otherwise.
-        """
-        if not self._is_authenticated or not self.client:
-            self._audit_log("session_validation", {
-                "result": "failed",
-                "reason": "not_authenticated"
-            })
-            return False
-
-        if self._kill_switch:
-            self._audit_log("session_validation", {
-                "result": "failed",
-                "reason": "kill_switch_active"
-            })
-            return False
-
-        try:
-            # Try to fetch dummy user info to verify session
-            test_user = await self.client.get_user_by_screen_name(
-                settings.dummy_username
-            )
-
-            if test_user is None:
-                self._audit_log("session_validation", {
-                    "result": "failed",
-                    "reason": "session_expired"
-                })
-                self._is_authenticated = False
-                return False
-
-            self._audit_log("session_validation", {
-                "result": "success"
-            })
-            return True
-
-        except (Unauthorized, TwitterException) as e:
-            logger.warning(f"Session validation failed: {e}")
-            self._audit_log("session_validation", {
-                "result": "failed",
-                "reason": str(e),
-                "error_type": type(e).__name__
-            })
-            self._is_authenticated = False
-            return False
-        except Exception as e:
-            logger.error(f"Unexpected error during session validation: {e}")
-            self._audit_log("session_validation", {
-                "result": "error",
-                "error": str(e)
-            })
-            return False
-
-    @asynccontextmanager
-    async def as_main(self):
-        """
-        Context manager for safe main account operations.
-
-        Ensures proper account switching with guaranteed revert and timeout protection.
-
-        Usage:
-            async with ghost_delegate.as_main():
-                # Perform operations as main account
-                await tweet.reply(text)
-
-        Raises:
-            RuntimeError: If kill switch is active or delegate is disabled.
-            asyncio.TimeoutError: If operation exceeds timeout.
-        """
-        if self._kill_switch:
-            raise RuntimeError("Emergency kill switch is active - cannot switch to main account")
-
-        if not settings.ghost_delegate_enabled:
-            raise RuntimeError("Ghost delegate is disabled in configuration")
-
-        if not self._is_authenticated:
-            raise RuntimeError("Not authenticated - cannot switch to main account")
-
-        # Validate session before switching
-        if not await self.validate_session():
-            raise RuntimeError("Session validation failed - re-authentication required")
-
-        try:
-            # Switch to main account
-            self.client.set_delegate_account(self.main_user.id)
-            self._current_account = "main"
-            self._audit_log("account_switch", {
-                "from": "dummy",
-                "to": "main",
-                "handle": settings.main_account_handle
-            })
-            logger.debug(f"Switched to main account: @{settings.main_account_handle}")
-
-            # Yield with timeout protection
-            try:
-                yield
-            except asyncio.TimeoutError:
-                logger.error(f"Operation timed out after {self._switch_timeout}s")
-                self._audit_log("operation_timeout", {
-                    "timeout": self._switch_timeout,
-                    "account": "main"
-                })
-                raise
-
-        finally:
-            # GUARANTEED revert - always executed even on exceptions
-            await self._revert_to_dummy()
-
-    async def emergency_stop(self) -> None:
-        """
-        Emergency shutdown - immediately clear all sessions and prevent further operations.
-
-        This method:
-        1. Sets the kill switch flag to prevent any further operations
-        2. Reverts to dummy account if currently switched
-        3. Clears all cookies and session data
-        4. Marks the instance as unauthenticated
-
-        This can be triggered manually or via external control (e.g., Telegram command).
-        """
-        logger.warning("EMERGENCY STOP TRIGGERED - Shutting down Ghost Delegate")
-        self._audit_log("emergency_stop", {
-            "triggered_at": datetime.utcnow().isoformat(),
-            "previous_state": "authenticated" if self._is_authenticated else "unauthenticated"
-        })
-
-        try:
-            # Set kill switch immediately
-            self._kill_switch = True
-
-            # Revert to dummy if currently switched
-            if self._current_account == "main":
-                await self._revert_to_dummy()
-
-            # Clear cookies
-            if COOKIE_FILE.exists():
-                COOKIE_FILE.unlink()
-                logger.info("Deleted cookie file")
-
-            # Clear client session
-            if self.client:
-                self.client = None
-
-            # Mark as unauthenticated
-            self._is_authenticated = False
-            self._current_account = "none"
-
-            logger.warning("Emergency stop completed - all sessions cleared")
-            self._audit_log("emergency_stop_complete", {
-                "status": "success"
-            })
-
         except Exception as e:
             logger.error(f"Error during emergency stop: {e}")
             self._audit_log("emergency_stop_error", {
@@ -442,21 +154,10 @@ class GhostDelegate:
 
     async def login_dummy(self, db: Optional["Database"] = None) -> bool:
         """
-        Authenticate with the dummy account.
-
-        Attempts to load existing cookies first for faster startup.
-        Falls back to fresh login if cookies are invalid or missing.
-
-        Includes login cooldown protection to prevent account bans:
-        - Tracks login attempts in the database
-        - Enforces a 3-hour (configurable) cooldown between fresh logins
-        - Waits if cooldown is active
-
-        Args:
-            db: Optional database instance for login tracking and cooldown enforcement.
-
-        Returns:
-            True if login successful, False otherwise.
+        Authenticate with the dummy account using CookieBot.
+        
+        Uses CookieBot to retrieve valid cookies (loading from file or
+        performing a fresh login via headless browser if needed).
         """
         # Check if disabled
         if not settings.ghost_delegate_enabled:
@@ -476,114 +177,50 @@ class GhostDelegate:
             })
             return False
 
-        cookies_existed = COOKIE_FILE.exists()
-
         try:
             self.client = Client()
+            cookie_bot = CookieBot()
+            
+            # Get valid cookies (this handles loading, decrypting, and fresh login if needed)
+            cookies = await cookie_bot.get_valid_cookies()
+            
+            if not cookies:
+                logger.error("CookieBot failed to obtain cookies")
+                self._audit_log("login_failed", {
+                    "reason": "cookie_bot_failed"
+                })
+                return False
 
-            # Try to load existing cookies first (with encryption)
-            if cookies_existed:
-                try:
-                    self._load_cookies_encrypted()
-                    logger.info("Loaded cookies from file (encrypted)")
+            # Load cookies into client
+            # Securely handle potential encryption from CookieBot by using a temp file
+            # Twikit requires {name: value} dict, but CookieBot returns list of cookie objects.
+            
+            import os
+            
+            # Convert list of cookie objects to {name: value} dict for twikit
+            if isinstance(cookies, list):
+                cookies_dict = {c['name']: c['value'] for c in cookies}
+            else:
+                cookies_dict = cookies
+            
+            # Create a temporary file to pass decrypted cookies to Twikit
+            try:
+                with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as tmp_file:
+                    json.dump(cookies_dict, tmp_file)
+                    tmp_file_path = tmp_file.name
+                
+                # Load from the temp plaintext file
+                self.client.load_cookies(tmp_file_path)
+                
+            finally:
+                # Always clean up the temp file containing sensitive cookies
+                if 'tmp_file_path' in locals() and os.path.exists(tmp_file_path):
+                    try:
+                        os.unlink(tmp_file_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to delete temp cookie file: {e}")
 
-                    # Verify session is still valid by fetching user info
-                    self.dummy_user = await self.client.get_user_by_screen_name(
-                        settings.dummy_username
-                    )
-                    self.main_user = await self.client.get_user_by_screen_name(
-                        settings.main_account_handle
-                    )
-
-                    self._is_authenticated = True
-                    self._current_account = "dummy"
-                    self._session_health = SessionHealth.HEALTHY
-                    self._last_successful_operation = datetime.utcnow()
-                    self._consecutive_failures = 0
-                    logger.info(f"Session restored for dummy: @{settings.dummy_username}")
-                    self._audit_log("login_success", {
-                        "method": "cookie_restore",
-                        "username": settings.dummy_username
-                    })
-
-                    # Record successful cookie restore in database
-                    if db:
-                        try:
-                            await db.record_login_attempt(
-                                account_type="dummy",
-                                login_type="cookie_restore",
-                                success=True,
-                                cookies_existed=True,
-                                cookies_valid=True,
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to record login attempt (DB): {e}")
-
-                    return True
-
-                except Exception as e:
-                    logger.warning(f"Cookies invalid or expired, doing fresh login: {e}")
-                    self._audit_log("cookie_restore_failed", {
-                        "reason": str(e),
-                        "fallback": "fresh_login"
-                    })
-
-                    # Record failed cookie restore in database
-                    if db:
-                        try:
-                            await db.record_login_attempt(
-                                account_type="dummy",
-                                login_type="cookie_restore",
-                                success=False,
-                                error_message=str(e),
-                                error_type=type(e).__name__,
-                                cookies_existed=True,
-                                cookies_valid=False,
-                            )
-                        except Exception as db_e:
-                            logger.warning(f"Failed to record login attempt (DB): {db_e}")
-
-            # =========================================================
-            # FRESH LOGIN REQUIRED - Check cooldown before proceeding
-            # =========================================================
-            if db and settings.login_cooldown_enabled:
-                try:
-                    cooldown_remaining = await db.get_login_cooldown_remaining(
-                        account_type="dummy",
-                        cooldown_hours=settings.login_cooldown_hours,
-                    )
-
-                    if cooldown_remaining > 0:
-                        hours = cooldown_remaining // 3600
-                        minutes = (cooldown_remaining % 3600) // 60
-                        logger.warning(
-                            f"Login cooldown active. Waiting {hours}h {minutes}m "
-                            f"({cooldown_remaining}s) before fresh login..."
-                        )
-                        self._audit_log("login_cooldown_wait", {
-                            "wait_seconds": cooldown_remaining,
-                            "cooldown_hours": settings.login_cooldown_hours
-                        })
-
-                        # Wait for cooldown to expire
-                        await asyncio.sleep(cooldown_remaining)
-                        logger.info("Login cooldown expired, proceeding with fresh login")
-
-                except Exception as e:
-                    logger.warning(f"Failed to check login cooldown (proceeding anyway): {e}")
-
-            # Fresh login
-            await self.client.login(
-                auth_info_1=settings.dummy_username,
-                auth_info_2=settings.dummy_email,
-                password=settings.dummy_password,
-            )
-
-            # Save cookies for next time (with encryption)
-            self._save_cookies_encrypted()
-            logger.info("Saved cookies to file (encrypted)")
-
-            # Get user objects for context switching
+            # Verify session
             self.dummy_user = await self.client.get_user_by_screen_name(
                 settings.dummy_username
             )
@@ -596,24 +233,24 @@ class GhostDelegate:
             self._session_health = SessionHealth.HEALTHY
             self._last_successful_operation = datetime.utcnow()
             self._consecutive_failures = 0
+            
             logger.info(f"Logged in as dummy: @{settings.dummy_username}")
             self._audit_log("login_success", {
-                "method": "fresh_login",
+                "method": "cookie_bot",
                 "username": settings.dummy_username
             })
-
-            # Record successful fresh login in database
+            
+            # Record successful login (simplified for now)
             if db:
-                try:
+                 try:
                     await db.record_login_attempt(
                         account_type="dummy",
-                        login_type="fresh",
-                        success=True,
-                        cookies_existed=cookies_existed,
+                        login_type="cookie_bot",
+                        success=True
                     )
-                except Exception as e:
-                    logger.warning(f"Failed to record login attempt (DB): {e}")
-
+                 except: 
+                    pass
+            
             return True
 
         except Exception as e:
@@ -621,24 +258,8 @@ class GhostDelegate:
             self._is_authenticated = False
             self._session_health = SessionHealth.FAILED
             self._audit_log("login_failed", {
-                "error": str(e),
-                "error_type": type(e).__name__
+                "error": str(e)
             })
-
-            # Record failed fresh login in database
-            if db:
-                try:
-                    await db.record_login_attempt(
-                        account_type="dummy",
-                        login_type="fresh",
-                        success=False,
-                        error_message=str(e),
-                        error_type=type(e).__name__,
-                        cookies_existed=cookies_existed,
-                    )
-                except Exception as db_e:
-                    logger.warning(f"Failed to record login attempt (DB): {db_e}")
-
             return False
 
     async def post_as_main(self, tweet_id: str, reply_text: str) -> bool:

@@ -33,3 +33,17 @@ python-dotenv==1.1.1
 
 # Security
 cryptography==45.0.7
+
+# Browser Automation (CookieBot) - Multiple providers with fallback
+# Priority 1: nodriver (best anti-detection, no WebDriver)
+nodriver>=0.38
+
+# Priority 2: undetected-chromedriver (Selenium with patches)
+undetected-chromedriver>=3.5.5
+
+# Priority 3: playwright (reliable fallback)
+playwright==1.49.0
+playwright-stealth==1.0.6
+
+# Priority 4: DrissionPage (alternative without WebDriver)
+DrissionPage>=4.0.0

@@ -17,6 +17,7 @@ Environment Variables:
 """
 
 from typing import Dict, Any, Optional
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import json
 import logging
@@ -36,9 +37,10 @@ class Settings(BaseSettings):
     # =========================================================================
     # X/Twitter Ghost Delegate
     # =========================================================================
-    dummy_username: str
-    dummy_email: str
-    dummy_password: str
+    # Primary dummy account (numbered for future multi-account support)
+    dummy_username: str = Field(alias="DUMMY_USERNAME1")
+    dummy_email: str = Field(alias="DUMMY_EMAIL1")
+    dummy_password: str = Field(alias="DUMMY_PASSWORD1")
     main_account_handle: str
 
     # =========================================================================
