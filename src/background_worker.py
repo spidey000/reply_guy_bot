@@ -101,13 +101,20 @@ async def process_pending_tweets(
     logger.info(f"Processing {len(pending)} pending tweet(s)")
     processed = 0
 
-    for tweet in pending:
+    for i, tweet in enumerate(pending):
         success = await _publish_tweet(tweet, ghost_delegate, db, telegram)
 
         if success:
             processed += 1
             if telegram:
                 await _notify_published(tweet, telegram)
+        
+        # Add delay between tweets to avoid bot detection (skip after last tweet)
+        if i < len(pending) - 1:
+            import random
+            delay = random.randint(30, 90)
+            logger.info(f"Waiting {delay}s before next publication...")
+            await asyncio.sleep(delay)
 
     return processed
 
@@ -151,6 +158,10 @@ async def _publish_tweet(
             )
             logger.error(f"Failed to publish tweet {tweet_id}, added to DLQ")
 
+            # Send detailed failure notification to Telegram
+            if telegram:
+                await telegram.send_publication_failure(tweet, error_msg)
+
             # Notify via AlertManager
             alerts = get_alerts()
             if alerts:
@@ -177,6 +188,13 @@ async def _publish_tweet(
             logger.error(f"Error publishing tweet {tweet_id}, added to DLQ: {e}")
         except Exception as dlq_error:
             logger.error(f"Failed to add to DLQ: {dlq_error}")
+
+        # Send detailed failure notification to Telegram
+        if telegram:
+            try:
+                await telegram.send_publication_failure(tweet, error_msg)
+            except Exception as notify_error:
+                logger.error(f"Failed to send failure notification: {notify_error}")
 
         # Notify via AlertManager
         alerts = get_alerts()

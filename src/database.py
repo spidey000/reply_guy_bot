@@ -295,7 +295,7 @@ class Database:
             }).execute()
 
             tweet_id = result.data[0]["id"]
-            logger.info(f"Added tweet to queue: {tweet_id}")
+            logger.info(f"Added tweet to queue: queue_id={tweet_id}, target_tweet_id={target_tweet_id}")
             return tweet_id
         except Exception as e:
             if "duplicate key" in str(e) or "unique constraint" in str(e):

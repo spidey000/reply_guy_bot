@@ -762,7 +762,8 @@ class ReplyGuyBot:
 
             # Home feed
             home_settings = await self.db.get_source_settings("home_feed_following")
-            if home_settings.get("enabled"):
+            home_enabled = home_settings.get("enabled", False)
+            if home_enabled:
                 self._aggregator.add_source(HomeFeedSource(feed_type="following"))
 
             # Reload topics
@@ -771,6 +772,14 @@ class ReplyGuyBot:
 
             # Sync seen tweets
             self._aggregator.mark_seen_batch(list(self._seen_tweets))
+            
+            # Log what sources are active
+            enabled = self._aggregator.get_enabled_sources()
+            source_list = [s.identifier for s in enabled]
+            logger.info(
+                f"Sources refreshed: {len(enabled)} active "
+                f"(targets={len(targets)}, searches={len(searches)}, home_feed={home_enabled}): {source_list}"
+            )
 
         except Exception as e:
             logger.warning(f"Failed to refresh sources: {e}")
@@ -886,7 +895,8 @@ class ReplyGuyBot:
 
             # 3. Send to Telegram for approval
             tweet_data = {
-                "id": queue_id,  # Use queue ID for callbacks
+                "id": queue_id,  # Use queue ID (UUID) for approve/reject callbacks
+                "target_tweet_id": tweet.id,  # Use Twitter tweet ID for URL construction
                 "author": author,
                 "content": tweet.text,
             }

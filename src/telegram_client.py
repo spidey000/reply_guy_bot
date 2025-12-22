@@ -131,17 +131,23 @@ class TelegramClient:
 
         Args:
             tweet_data: Original tweet information.
+                - id: Queue ID (UUID) for database operations/callbacks
+                - target_tweet_id: Twitter's numeric tweet ID for URL
+                - author: Tweet author handle
+                - content: Tweet text content
             suggested_reply: AI-generated reply suggestion.
 
         Returns:
             Message ID of the sent message.
         """
-        tweet_id = tweet_data.get("id", "")
+        queue_id = tweet_data.get("id", "")
+        # Use target_tweet_id for URL (Twitter's numeric ID), fallback to queue_id for backwards compat
+        twitter_tweet_id = tweet_data.get("target_tweet_id", queue_id)
         author = tweet_data.get("author", "unknown")
         content = tweet_data.get("content", "")
         
-        # Construct tweet URL
-        tweet_url = f"https://x.com/{author}/status/{tweet_id}"
+        # Construct tweet URL using the actual Twitter tweet ID
+        tweet_url = f"https://x.com/{author}/status/{twitter_tweet_id}"
 
         message = (
             f"*New Tweet to Reply*\n"
@@ -156,11 +162,12 @@ class TelegramClient:
             f"```"
         )
 
+        # Use queue_id (UUID) for callbacks since that's what the database uses
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("✅ Approve", callback_data=f"approve:{tweet_id}"),
-                InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{tweet_id}"),
-                InlineKeyboardButton("❌ Reject", callback_data=f"reject:{tweet_id}"),
+                InlineKeyboardButton("✅ Approve", callback_data=f"approve:{queue_id}"),
+                InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{queue_id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"reject:{queue_id}"),
             ]
         ])
 
@@ -172,7 +179,7 @@ class TelegramClient:
             disable_web_page_preview=True,
         )
 
-        logger.info(f"Sent approval request for tweet {tweet_id}")
+        logger.info(f"Sent approval request for queue_id={queue_id}, tweet_id={twitter_tweet_id}")
         return msg.message_id
 
     async def send_scheduled_confirmation(
@@ -201,37 +208,177 @@ class TelegramClient:
 
     async def send_published_notification(self, tweet: dict) -> None:
         """
-        Send notification that a tweet was published.
+        Send detailed notification that a tweet was published.
 
         Args:
-            tweet: Published tweet data.
+            tweet: Published tweet data from database, including:
+                - id: Queue ID (UUID)
+                - target_tweet_id: Twitter's numeric tweet ID
+                - target_author: Author of original tweet
+                - target_content: Original tweet content
+                - reply_text: The reply that was posted
         """
-        message = f"📤 *Published*\n\nReply posted successfully!"
+        queue_id = tweet.get("id", "unknown")
+        target_tweet_id = tweet.get("target_tweet_id", "")
+        author = tweet.get("target_author", "unknown")
+        reply_text = tweet.get("reply_text", "")
+        
+        # Construct the original tweet URL
+        tweet_url = f"https://x.com/{author}/status/{target_tweet_id}" if target_tweet_id else "N/A"
+        
+        # Truncate reply if too long
+        reply_preview = reply_text[:200] + "..." if len(reply_text) > 200 else reply_text
+        
+        message = (
+            f"📤 *Reply Published Successfully!*\n\n"
+            f"*To:* @{author}\n"
+            f"*Original Tweet:* [View]({tweet_url})\n\n"
+            f"*Reply Posted:*\n"
+            f"```\n{reply_preview}\n```\n\n"
+            f"_Queue ID: {queue_id}_"
+        )
 
         await self.app.bot.send_message(
             chat_id=self.chat_id,
             text=message,
             parse_mode="Markdown",
+            disable_web_page_preview=True,
         )
 
-    async def send_startup_notification(self) -> None:
-        """Send notification that the bot has started."""
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    async def send_publication_failure(self, tweet: dict, error: str) -> None:
+        """
+        Send detailed notification that a tweet publication failed.
+
+        Args:
+            tweet: Tweet data from database, including:
+                - id: Queue ID (UUID)
+                - target_tweet_id: Twitter's numeric tweet ID
+                - target_author: Author of original tweet
+                - reply_text: The reply that failed to post
+            error: Error message describing the failure
+        """
+        queue_id = tweet.get("id", "unknown")
+        target_tweet_id = tweet.get("target_tweet_id", "")
+        author = tweet.get("target_author", "unknown")
+        reply_text = tweet.get("reply_text", "")
+        
+        # Construct the original tweet URL
+        tweet_url = f"https://x.com/{author}/status/{target_tweet_id}" if target_tweet_id else "N/A"
+        
+        # Truncate reply and error if too long
+        reply_preview = reply_text[:150] + "..." if len(reply_text) > 150 else reply_text
+        error_preview = error[:300] + "..." if len(error) > 300 else error
+        
         message = (
+            f"❌ *Publication Failed*\n\n"
+            f"*To:* @{author}\n"
+            f"*Original Tweet:* [View]({tweet_url})\n\n"
+            f"*Reply (not posted):*\n"
+            f"```\n{reply_preview}\n```\n\n"
+            f"*Error:*\n`{error_preview}`\n\n"
+            f"_Queue ID: {queue_id}_\n"
+            f"_Tweet added to Dead Letter Queue for retry_"
+        )
+
+        await self.app.bot.send_message(
+            chat_id=self.chat_id,
+            text=message,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
+
+
+    async def send_startup_notification(self) -> None:
+        """Send notification that the bot has started and pin a help message."""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Build comprehensive help message with all commands
+        help_message = self._build_help_message()
+        
+        startup_message = (
             f"🚀 *Bot Started*\n\n"
             f"*Time:* {timestamp}\n"
             f"*Account:* @{settings.main_account_handle}\n"
-            f"*Mode:* {'Burst' if settings.burst_mode_enabled else 'Normal'}"
+            f"*Mode:* {'Burst' if settings.burst_mode_enabled else 'Normal'}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{help_message}"
         )
+        
         try:
-            await self.app.bot.send_message(
+            # Send the startup message with commands
+            msg = await self.app.bot.send_message(
                 chat_id=self.chat_id,
-                text=message,
+                text=startup_message,
                 parse_mode="Markdown",
             )
-            logger.info("Sent startup notification")
+            logger.info("Sent startup notification with commands")
+            
+            # Try to pin the message for easy reference
+            try:
+                await self.app.bot.pin_chat_message(
+                    chat_id=self.chat_id,
+                    message_id=msg.message_id,
+                    disable_notification=True,  # Don't spam everyone
+                )
+                logger.info("Pinned startup help message")
+            except Exception as pin_error:
+                # Pinning might fail if bot doesn't have permission
+                logger.warning(f"Could not pin startup message: {pin_error}")
+                
         except Exception as e:
             logger.error(f"Failed to send startup notification: {e}")
+
+    def _build_help_message(self) -> str:
+        """Build a comprehensive help message with all available commands."""
+        # Define command categories with their commands
+        categories = {
+            "📊 Status & Info": [
+                {"cmd": "start", "syntax": "/start", "desc": "Show this help message"},
+                {"cmd": "queue", "syntax": "/queue", "desc": "Show pending tweets queue"},
+                {"cmd": "stats", "syntax": "/stats", "desc": "Show bot statistics"},
+                {"cmd": "settings", "syntax": "/settings", "desc": "View/modify bot settings"},
+                {"cmd": "sources", "syntax": "/sources", "desc": "Show all tweet sources status"},
+            ],
+            "🎯 Target Accounts": [
+                {"cmd": "add_target", "syntax": "/add_target @user", "desc": "Add accounts to monitor"},
+                {"cmd": "remove_target", "syntax": "/remove_target @user", "desc": "Stop monitoring accounts"},
+                {"cmd": "list_targets", "syntax": "/list_targets", "desc": "Show monitored accounts"},
+            ],
+            "🔍 Search Queries": [
+                {"cmd": "add_search", "syntax": "/add_search <query>", "desc": "Add a search query"},
+                {"cmd": "remove_search", "syntax": "/remove_search <query>", "desc": "Remove a search query"},
+                {"cmd": "list_searches", "syntax": "/list_searches", "desc": "List active search queries"},
+            ],
+            "🏷️ Topic Filters": [
+                {"cmd": "add_topic", "syntax": "/add_topic <keyword>", "desc": "Add a topic filter"},
+                {"cmd": "remove_topic", "syntax": "/remove_topic <keyword>", "desc": "Remove a topic filter"},
+                {"cmd": "list_topics", "syntax": "/list_topics", "desc": "List active topics"},
+            ],
+            "🏠 Home Feed": [
+                {"cmd": "enable_home_feed", "syntax": "/enable_home_feed", "desc": "Enable home feed monitoring"},
+                {"cmd": "disable_home_feed", "syntax": "/disable_home_feed", "desc": "Disable home feed monitoring"},
+            ],
+        }
+
+        lines = ["*📋 Available Commands*\n"]
+
+        for category_name, category_cmds in categories.items():
+            lines.append(f"*{category_name}*")
+            for item in category_cmds:
+                lines.append(f"  `{item['syntax']}` — {item['desc']}")
+            lines.append("")
+
+        lines.append("💡 _Use /sources to see all active sources_")
+        
+        return "\n".join(lines)
+
+    def _escape_markdown(self, text: str) -> str:
+        """Escape special Telegram Markdown characters to prevent parsing errors."""
+        # Characters that need escaping in Telegram Markdown
+        special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        for char in special_chars:
+            text = text.replace(char, f'\\{char}')
+        return text
 
     async def send_stop_notification(self, reason: str = "Manual shutdown") -> None:
         """
@@ -431,14 +578,33 @@ class TelegramClient:
             lines = ["📋 *Pending Tweets*\n"]
             for i, tweet in enumerate(pending[:10], 1):  # Show max 10
                 author = tweet.get("target_author", "unknown")
+                target_tweet_id = tweet.get("target_tweet_id", "")
                 reply_preview = tweet.get("reply_text", "")[:50] + "..."
-                scheduled = tweet.get("scheduled_at", "Not scheduled")
-                status = tweet.get("status", "pending")
+                scheduled_at = tweet.get("scheduled_at", "")
+                
+                # Format scheduled time
+                if scheduled_at:
+                    try:
+                        # Parse ISO format and display nicely
+                        from datetime import datetime
+                        if isinstance(scheduled_at, str):
+                            dt = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
+                            scheduled_str = dt.strftime("%H:%M:%S")
+                        else:
+                            scheduled_str = str(scheduled_at)
+                    except:
+                        scheduled_str = str(scheduled_at)
+                else:
+                    scheduled_str = "Not scheduled"
+                
+                # Construct tweet URL
+                tweet_url = f"https://x.com/{author}/status/{target_tweet_id}" if target_tweet_id else ""
+                tweet_link = f"[Tweet]({tweet_url})" if tweet_url else "N/A"
 
                 lines.append(
-                    f"{i}. *@{author}*\n"
-                    f"   Reply: _{reply_preview}_\n"
-                    f"   Status: {status}\n"
+                    f"{i}. *@{author}* — {tweet_link}\n"
+                    f"   📝 _{reply_preview}_\n"
+                    f"   ⏰ {scheduled_str}\n"
                 )
 
             if len(pending) > 10:
@@ -447,6 +613,7 @@ class TelegramClient:
             await update.message.reply_text(
                 "\n".join(lines),
                 parse_mode="Markdown",
+                disable_web_page_preview=True,
             )
 
         except Exception as e:
@@ -811,7 +978,9 @@ class TelegramClient:
             lines.append(f"\n*Search Queries:* {len(searches)} active")
             if searches:
                 for s in searches[:5]:
-                    lines.append(f"  • `{s['query']}`")
+                    # Escape special markdown chars in query to prevent parsing errors
+                    safe_query = self._escape_markdown(s['query'])
+                    lines.append(f"  • `{safe_query}`")
                 if len(searches) > 5:
                     lines.append(f"  _...and {len(searches) - 5} more_")
 
