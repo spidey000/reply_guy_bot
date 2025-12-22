@@ -259,15 +259,20 @@ class TelegramClient:
         """
         queue_id = tweet.get("id", "unknown")
         target_tweet_id = tweet.get("target_tweet_id", "")
-        author = tweet.get("target_author", "unknown")
+        author = self._escape_markdown(str(tweet.get("target_author", "unknown")))
         reply_text = tweet.get("reply_text", "")
         
         # Construct the original tweet URL
-        tweet_url = f"https://x.com/{author}/status/{target_tweet_id}" if target_tweet_id else "N/A"
+        tweet_url = f"https://x.com/{tweet.get('target_author', 'unknown')}/status/{target_tweet_id}" if target_tweet_id else "N/A"
         
         # Truncate reply and error if too long
         reply_preview = reply_text[:150] + "..." if len(reply_text) > 150 else reply_text
+        # Escape code block content (backticks)
+        reply_preview = reply_preview.replace("`", "'")
+        
         error_preview = error[:300] + "..." if len(error) > 300 else error
+        # Escape inline code content (backticks)
+        error_preview = error_preview.replace("`", "'")
         
         message = (
             f"❌ *Publication Failed*\n\n"
@@ -374,8 +379,9 @@ class TelegramClient:
 
     def _escape_markdown(self, text: str) -> str:
         """Escape special Telegram Markdown characters to prevent parsing errors."""
-        # Characters that need escaping in Telegram Markdown
-        special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        # Characters that need escaping in Telegram Markdown V1
+        # We only escape the critical ones that break parsing
+        special_chars = ['_', '*', '`', '[', ']']
         for char in special_chars:
             text = text.replace(char, f'\\{char}')
         return text
@@ -433,7 +439,7 @@ class TelegramClient:
                 "",
                 f"*Type:* `{error_type}`",
                 f"*Time:* {timestamp}",
-                f"*Message:* {message}",
+                f"*Message:* {self._escape_markdown(message)}",
             ]
 
             # Add details if provided

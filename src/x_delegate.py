@@ -143,14 +143,7 @@ class GhostDelegate:
         except Exception as e:
             logger.error(f"Failed to write audit log: {e}")
 
-        except Exception as e:
-            logger.error(f"Error during emergency stop: {e}")
-            self._audit_log("emergency_stop_error", {
-                "error": str(e)
-            })
-            # Even if there's an error, ensure kill switch is set
-            self._kill_switch = True
-            raise
+
 
     async def login_dummy(self, db: Optional["Database"] = None) -> bool:
         """
@@ -494,7 +487,9 @@ class GhostDelegate:
 
         try:
             # Switch to main account
-            self.client.set_delegate_account(settings.main_account_handle)
+            if not self.main_user:
+                 raise RuntimeError("Cannot switch to main: main user info not loaded")
+            self.client.set_delegate_account(self.main_user.id)
             self._current_account = "main"
             self._audit_log("account_switch", {
                 "from": "dummy",
