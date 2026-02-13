@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  reply-guy-bot:
+    image: georgegg0099/reply-guy-bot:latest
+    container_name: reply_guy_bot
+    restart: unless-stopped
+    environment:
+      # Runtime / environment selection
+      - APP_ENV=production
+
+      # Primary X API credentials
+      - MAIN_ACCOUNT_HANDLE=your_main_handle
+      - X_API_BEARER_TOKEN=your_read_bearer_token
+      - X_API_KEY=your_oauth1_api_key
+      - X_API_KEY_SECRET=your_oauth1_api_key_secret
+      - X_ACCESS_TOKEN=your_oauth1_access_token
+      - X_ACCESS_TOKEN_SECRET=your_oauth1_access_token_secret
+      - X_API_USER_BEARER_TOKEN=your_user_bearer_token
+      - X_API_BASE_URL=https://api.x.com/2
+
+      # AI provider (replace with the provider you use)
+      - AI_API_KEY=sk-xxx
+      - AI_BASE_URL=https://api.openai.com/v1
+      - AI_MODEL=gpt-4o-mini
+      - AI_FALLBACK_MODELS=["openai/gpt-4o-mini","deepseek/deepseek-chat"]
+
+      # Telegram approvals
+      - TELEGRAM_BOT_TOKEN=123456:ABC-DEF
+      - TELEGRAM_CHAT_ID=-1001234567890
+
+      # Supabase persistence backend
+      - SUPABASE_URL=https://xxx.supabase.co
+      - SUPABASE_KEY=eyJ3xx...
+
+      # Burst mode / rate control (customize as needed)
+      - BURST_MODE_ENABLED=true
+      - QUIET_HOURS_START=0
+      - QUIET_HOURS_END=7
+      - MIN_DELAY_MINUTES=15
+      - MAX_DELAY_MINUTES=120
+      - SCHEDULER_CHECK_INTERVAL=60
+      - MAX_POSTS_PER_HOUR=15
+      - MAX_POSTS_PER_DAY=50
+      - LOGIN_COOLDOWN_HOURS=3
+      - FILTER_ENABLED=true
+      - FILTER_MIN_SCORE=5
+      - MIN_TELEGRAM_ALERT_LEVEL=DEBUG
+
+      # Secure session orchestration
+      - X_SESSION_ENABLED=true
+      - X_SESSION_OPERATION_TIMEOUT=30
+
+      # Security-critical keys
+      - COOKIE_ENCRYPTION_KEY=replace_with_fernet_key
+
+      # Optional: Pre-baked cookies (skip login challenge)
+      - X_AUTH_TOKEN=
+      - X_CT0=
+
+    volumes:
+      - bot_data:/app/data
+      - bot_logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 120s
+
+volumes:
+  bot_data:
+  bot_logs:

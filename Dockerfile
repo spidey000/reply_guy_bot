@@ -35,7 +35,10 @@ COPY config/ ./config/
 COPY scripts/ ./scripts/
 COPY VERSION .
 
-RUN useradd --create-home appuser && chown -R appuser:appuser /app
+RUN mkdir -p /app/logs /app/data \
+    && ln -sf /app/logs/x_session_audit.log /app/x_session_audit.log \
+    && useradd --create-home appuser \
+    && chown -R appuser:appuser /app
 USER appuser
 
 HEALTHCHECK --interval=60s --timeout=30s --start-period=120s --retries=3 CMD [ "python", "scripts/healthcheck.py" ]
