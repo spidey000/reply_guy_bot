@@ -12,6 +12,8 @@
 --   - target_accounts: Twitter accounts to monitor for new tweets
 --   - login_history: Tracks login attempts for ban prevention (T022)
 --   - failed_tweets: Dead letter queue for failed posts (T017)
+--   - source_cursors: Persistent since_id cursors per source partition
+--   - pipeline_events: Event funnel telemetry and audit records
 
 -- ============================================================================
 -- TWEET QUEUE TABLE
@@ -30,11 +32,21 @@ CREATE TABLE IF NOT EXISTS tweet_queue (
     reply_text TEXT NOT NULL,
 
     -- Status tracking
-    -- Values: 'pending', 'approved', 'posted', 'rejected', 'failed'
-    status TEXT DEFAULT 'pending',
+    -- Values: 'pending', 'approved', 'publishing', 'posted', 'rejected', 'failed'
+    status TEXT DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'publishing', 'posted', 'rejected', 'failed')),
 
     -- Scheduling (Burst Mode)
     scheduled_at TIMESTAMP WITH TIME ZONE,
+
+    -- Publish idempotency and in-flight tracking
+    publish_request_id TEXT,
+    publishing_started_at TIMESTAMP WITH TIME ZONE,
+    publish_attempt_count INT DEFAULT 0,
+    published_reply_tweet_id TEXT,
+    last_publish_error TEXT,
+    approval_message_id BIGINT,
+
     posted_at TIMESTAMP WITH TIME ZONE,
 
     -- Timestamps
@@ -50,13 +62,53 @@ CREATE INDEX IF NOT EXISTS idx_tweet_queue_status
     ON tweet_queue(status);
 
 -- Index for scheduler queries (find approved tweets due for publication)
-CREATE INDEX IF NOT EXISTS idx_tweet_queue_scheduled
+CREATE INDEX IF NOT EXISTS idx_tweet_queue_approved_due
     ON tweet_queue(scheduled_at)
     WHERE status = 'approved' AND posted_at IS NULL;
+
+-- Index for stale publish-claim recovery
+CREATE INDEX IF NOT EXISTS idx_tweet_queue_publishing_stale
+    ON tweet_queue(publishing_started_at)
+    WHERE status = 'publishing';
 
 -- Index for preventing duplicate replies to same tweet
 CREATE INDEX IF NOT EXISTS idx_tweet_queue_target_tweet
     ON tweet_queue(target_tweet_id);
+
+-- Atomic claim helper for approved->publishing transitions.
+CREATE OR REPLACE FUNCTION claim_ready_tweets(
+    p_before TIMESTAMP WITH TIME ZONE,
+    p_limit INT DEFAULT 10
+)
+RETURNS SETOF tweet_queue
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RETURN QUERY
+    WITH candidates AS (
+        SELECT id
+        FROM tweet_queue
+        WHERE status = 'approved'
+          AND posted_at IS NULL
+          AND scheduled_at IS NOT NULL
+          AND scheduled_at <= p_before
+        ORDER BY scheduled_at
+        FOR UPDATE SKIP LOCKED
+        LIMIT GREATEST(p_limit, 0)
+    ), claimed AS (
+        UPDATE tweet_queue tq
+        SET status = 'publishing',
+            publish_request_id = gen_random_uuid()::text,
+            publishing_started_at = NOW(),
+            publish_attempt_count = COALESCE(tq.publish_attempt_count, 0) + 1,
+            last_publish_error = NULL
+        FROM candidates c
+        WHERE tq.id = c.id
+        RETURNING tq.*
+    )
+    SELECT * FROM claimed;
+END;
+$$;
 
 -- ============================================================================
 -- TARGET ACCOUNTS TABLE
@@ -112,13 +164,6 @@ CREATE TRIGGER update_target_accounts_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
--- Apply trigger to user_settings
-DROP TRIGGER IF EXISTS update_user_settings_updated_at ON user_settings;
-CREATE TRIGGER update_user_settings_updated_at
-    BEFORE UPDATE ON user_settings
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
 -- ============================================================================
 -- ROW LEVEL SECURITY (RLS) - Optional
 -- ============================================================================
@@ -140,24 +185,20 @@ CREATE TRIGGER update_user_settings_updated_at
 -- ============================================================================
 -- LOGIN HISTORY TABLE (Ban Prevention - T022)
 -- ============================================================================
--- Tracks all login attempts to enforce cooldown between fresh logins.
--- This prevents X/Twitter from banning the dummy account due to frequent
--- re-authentication without using cookies.
+-- Tracks all authentication attempts for monitoring and cooldown logic.
 --
 -- Used by:
---   - src/database.py: record_login_attempt(), get_last_successful_fresh_login(),
+--   - src/database.py: record_login_attempt(), get_last_successful_official_login(),
 --                      get_login_cooldown_remaining(), get_login_stats()
---   - src/x_delegate.py: login_dummy() checks cooldown before fresh login
+--   - src/x_delegate.py: authenticate() checks cooldown before official API login
 --
 -- Configuration:
---   - LOGIN_COOLDOWN_HOURS (default: 3) - Minimum hours between fresh logins
+--   - LOGIN_COOLDOWN_HOURS (default: 3) - Minimum hours between official API logins
 --   - LOGIN_COOLDOWN_ENABLED (default: true) - Enable/disable cooldown check
 --
--- Flow:
---   1. If cookies exist and valid → Use them (no cooldown check needed)
---   2. If cookies missing/invalid → Check last fresh login timestamp
---   3. If last fresh login < LOGIN_COOLDOWN_HOURS ago → Wait until cooldown expires
---   4. After fresh login → Save cookies and record attempt to this table
+-- Typical flow:
+--   1. Authenticate with official X API credentials
+--   2. Record success/failure in this table
 
 CREATE TABLE IF NOT EXISTS login_history (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -168,9 +209,9 @@ CREATE TABLE IF NOT EXISTS login_history (
     account_type TEXT NOT NULL CHECK (account_type IN ('dummy', 'main')),
 
     -- Login method
-    -- 'fresh' = Credential-based login (username/email/password)
-    -- 'cookie_restore' = Session restored from cookies.json
-    login_type TEXT NOT NULL CHECK (login_type IN ('fresh', 'cookie_restore')),
+    -- 'official_x_api' = OAuth-based authentication against official API
+    -- 'fresh' and 'cookie_*' are legacy values kept for backward compatibility
+    login_type TEXT NOT NULL CHECK (login_type IN ('official_x_api', 'fresh', 'cookie_restore', 'cookie_bot')),
 
     -- Outcome
     success BOOLEAN NOT NULL,
@@ -184,14 +225,14 @@ CREATE TABLE IF NOT EXISTS login_history (
 
     -- Cookie state at time of attempt
     cookies_existed BOOLEAN DEFAULT false,
-    cookies_valid BOOLEAN  -- NULL for fresh logins, true/false for cookie restores
+    cookies_valid BOOLEAN  -- NULL for official API logins, true/false for legacy cookie flows
 );
 
--- Index for cooldown queries: Find last successful fresh login quickly
+-- Index for cooldown queries: Find last successful official API login quickly
 -- This is the most common query pattern for cooldown enforcement
-CREATE INDEX IF NOT EXISTS idx_login_history_fresh_success
+CREATE INDEX IF NOT EXISTS idx_login_history_official_success
     ON login_history(attempted_at DESC)
-    WHERE login_type = 'fresh' AND success = true;
+    WHERE login_type = 'official_x_api' AND success = true;
 
 -- Index for failure analysis: Find recent failed logins
 CREATE INDEX IF NOT EXISTS idx_login_history_recent_failures
@@ -223,6 +264,11 @@ CREATE TABLE IF NOT EXISTS failed_tweets (
     -- Error tracking
     error TEXT,
     retry_count INT DEFAULT 0,
+    next_retry_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    max_retries INT DEFAULT 5,
+    last_error_type TEXT,
+    request_id TEXT,
+    retryable BOOLEAN DEFAULT true,
 
     -- Timestamps
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -234,13 +280,63 @@ CREATE TABLE IF NOT EXISTS failed_tweets (
 );
 
 -- Index for finding items ready for retry (pending with retries remaining)
-CREATE INDEX IF NOT EXISTS idx_failed_tweets_pending
-    ON failed_tweets(created_at)
-    WHERE status = 'pending' AND retry_count < 5;
+CREATE INDEX IF NOT EXISTS idx_failed_tweets_pending_due
+    ON failed_tweets(next_retry_at)
+    WHERE status = 'pending' AND retryable = true;
 
 -- Index for looking up DLQ items by original queue entry
 CREATE INDEX IF NOT EXISTS idx_failed_tweets_queue_id
     ON failed_tweets(tweet_queue_id);
+
+-- Optional correlation-id lookup for debugging/idempotency traces
+CREATE INDEX IF NOT EXISTS idx_failed_tweets_request_id
+    ON failed_tweets(request_id);
+
+-- ============================================================================
+-- SOURCE CURSORS TABLE (Persistent since_id per source)
+-- ============================================================================
+-- Stores durable cursors keyed by (source_type, source_identifier).
+-- Enables restart-safe incremental pulls from multiple independent sources.
+
+CREATE TABLE IF NOT EXISTS source_cursors (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    source_identifier TEXT NOT NULL,
+    since_id TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT unique_source_cursor UNIQUE (source_type, source_identifier)
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_cursors_source
+    ON source_cursors(source_type, source_identifier);
+
+-- ============================================================================
+-- PIPELINE EVENTS TABLE (Funnel / Audit)
+-- ============================================================================
+-- Append-only event table for operational observability and funnel stats.
+
+CREATE TABLE IF NOT EXISTS pipeline_events (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    event_name TEXT NOT NULL,
+    target_tweet_id TEXT,
+    tweet_queue_id UUID REFERENCES tweet_queue(id) ON DELETE SET NULL,
+    source_type TEXT,
+    source_identifier TEXT,
+    request_id TEXT,
+    telegram_user_id BIGINT,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_events_created_at
+    ON pipeline_events(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_events_event_name
+    ON pipeline_events(event_name, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_events_request_id
+    ON pipeline_events(request_id);
 
 -- ============================================================================
 -- USER SETTINGS TABLE (Settings Editor)
@@ -281,6 +377,13 @@ CREATE TABLE IF NOT EXISTS user_settings (
     -- Ensure each user has only one settings record
     CONSTRAINT unique_user_settings UNIQUE (telegram_user_id)
 );
+-- Apply trigger to user_settings
+DROP TRIGGER IF EXISTS update_user_settings_updated_at ON user_settings;
+CREATE TRIGGER update_user_settings_updated_at
+    BEFORE UPDATE ON user_settings
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
 
 -- Index for fast user settings lookup (most common query)
 CREATE INDEX IF NOT EXISTS idx_user_settings_telegram_id
@@ -359,12 +462,19 @@ CREATE INDEX IF NOT EXISTS idx_settings_history_recent
 
 -- Login history verification:
 -- SELECT * FROM login_history ORDER BY attempted_at DESC LIMIT 10;
--- SELECT * FROM login_history WHERE login_type = 'fresh' AND success = true ORDER BY attempted_at DESC LIMIT 1;
+-- SELECT * FROM login_history WHERE login_type = 'official_x_api' AND success = true ORDER BY attempted_at DESC LIMIT 1;
 
 -- Failed tweets (DLQ) verification:
 -- SELECT * FROM failed_tweets WHERE status = 'pending' LIMIT 5;
 -- SELECT count(*) as pending_dlq FROM failed_tweets WHERE status = 'pending';
 -- SELECT count(*) as exhausted_dlq FROM failed_tweets WHERE status = 'exhausted';
+-- SELECT * FROM failed_tweets WHERE status = 'pending' AND retryable = true AND next_retry_at <= NOW() LIMIT 5;
+
+-- Source cursor verification:
+-- SELECT * FROM source_cursors ORDER BY updated_at DESC LIMIT 20;
+
+-- Pipeline events verification:
+-- SELECT event_name, count(*) FROM pipeline_events WHERE created_at >= NOW() - INTERVAL '24 hours' GROUP BY event_name ORDER BY count(*) DESC;
 
 -- User settings verification:
 -- SELECT * FROM user_settings LIMIT 5;

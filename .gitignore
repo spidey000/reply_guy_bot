@@ -91,7 +91,14 @@ coverage.db
 # === Generated Planning Docs ===
 AGENT_EXECUTION_PLAN.json
 
+# === Archive ===
+.archive/*
+!.archive/.gitkeep
+!.archive/.gitignore
+!.archive/README.md
+
 # === Documentation (private) ===
 docs/
 *.md
 !README.md
+!.archive/README.md

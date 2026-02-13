@@ -1,25 +1,29 @@
 # =============================================================================
 # Reply Guy Bot - Docker Compose
 # =============================================================================
-# Start:   docker-compose up -d
-# Logs:    docker-compose logs -f bot
-# Stop:    docker-compose down
+# Start:   docker compose up -d
+# Logs:    docker compose logs -f bot
+# Stop:    docker compose down
+#
+# When deploying via Portainer stack, keep the same service definition and
+# provide the environment variables through the stack editor (or an external
+# secret store) instead of referencing .env directly.
 
 version: '3.8'
 
 services:
   bot:
-    build: .
+    image: spidey000/reply_guy:latest
+    build:
+      context: .
     container_name: reply_guy_bot
     restart: unless-stopped
     env_file:
       - .env
+    # Mount logs (and optional SQLite fallback DB) outside the container
     volumes:
-      # Persist Twikit cookies between restarts
-      - ./cookies.json:/app/cookies.json:rw
-      # Persist audit logs
       - ./logs:/app/logs:rw
-    # Resource limits to prevent runaway usage
+      - ./data:/app/data:rw
     deploy:
       resources:
         limits:
@@ -28,21 +32,19 @@ services:
         reservations:
           cpus: '0.25'
           memory: 128M
-    # Healthcheck with actual bot verification
     healthcheck:
       test: ["CMD", "python", "scripts/healthcheck.py"]
       interval: 60s
       timeout: 30s
       retries: 3
       start_period: 120s
-    # Logging configuration
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
 
-  # Optional: Redis for future rate limiting / caching
+  # Optional: Redis cache placeholder (disabled by default)
   # redis:
   #   image: redis:alpine
   #   container_name: reply_guy_redis

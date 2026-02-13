@@ -8,7 +8,7 @@
 set -e
 
 # Configuration
-IMAGE_NAME="georgegg0099/reply-guy-bot"
+IMAGE_NAME="spidey000/reply_guy"
 VERSION_FILE="VERSION"
 CHANGELOG_FILE="CHANGELOG.log"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -190,10 +190,10 @@ echo ""
 if [[ "$DRY_RUN" = true ]]; then
     print_warning "DRY RUN - Commands that would be executed:"
     echo ""
-    echo "  sudo docker build -t $IMAGE_NAME:$NEW_VERSION -t $IMAGE_NAME:latest --no-cache ."
+    echo "  docker build -t $IMAGE_NAME:$NEW_VERSION -t $IMAGE_NAME:latest --no-cache ."
     if [[ "$SKIP_PUSH" = false ]]; then
-        echo "  sudo docker push $IMAGE_NAME:$NEW_VERSION"
-        echo "  sudo docker push $IMAGE_NAME:latest"
+        echo "  docker push $IMAGE_NAME:$NEW_VERSION"
+        echo "  docker push $IMAGE_NAME:latest"
     fi
     echo "  echo \"$NEW_VERSION\" > $VERSION_FILE"
     echo "  [Update CHANGELOG.log]"
@@ -212,7 +212,7 @@ echo ""
 
 # Build Docker image
 print_info "Building Docker image (no-cache)..."
-sudo docker build \
+docker build \
     -t "$IMAGE_NAME:$NEW_VERSION" \
     -t "$IMAGE_NAME:latest" \
     --no-cache \
@@ -223,8 +223,8 @@ print_success "Docker image built successfully"
 # Push to registry
 if [[ "$SKIP_PUSH" = false ]]; then
     print_info "Pushing to registry..."
-    sudo docker push "$IMAGE_NAME:$NEW_VERSION"
-    sudo docker push "$IMAGE_NAME:latest"
+    docker push "$IMAGE_NAME:$NEW_VERSION"
+    docker push "$IMAGE_NAME:latest"
     print_success "Image pushed to registry"
 else
     print_warning "Skipping push to registry (--skip-push)"
@@ -248,5 +248,5 @@ print_success "Image: $IMAGE_NAME:$NEW_VERSION"
 print_success "Image: $IMAGE_NAME:latest"
 echo ""
 print_info "To run the new image:"
-echo "  sudo docker run -d --env-file .env $IMAGE_NAME:$NEW_VERSION"
+echo "  docker run -d --env-file .env $IMAGE_NAME:$NEW_VERSION"
 echo ""
